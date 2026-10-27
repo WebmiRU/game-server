@@ -58,35 +58,30 @@ func (s *Server) PlayerAttackSpeed(playerID string) float64 {
 	return attackSpeed
 }
 
-// handleAttack validates a single requested melee strike. This stage deliberately does not
-// change health: damage, death, respawn, and counterattacks will be separate mechanics.
+// handleAttack validates one strike against the target already selected on the server.
+// The client does not send a target ID here: set_target owns selection, and this command
+// always acts on the server's current target. Damage is intentionally out of scope for now.
 func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error {
-	// Keep the accepted message protocol extensible: a request identifies any future target
-	// with (targetType, targetId), but only live monsters and other players are attackable now.
-	targetType := strings.ToLower(strings.TrimSpace(req.TargetType))
-	targetID := strings.TrimSpace(req.TargetID)
-	if targetType != "monster" && targetType != "player" {
+	target := s.currentPlayerTarget(playerID)
+	if target == nil {
 		return s.writeAttackResult(conn, playerID, req.RequestID, false,
-			"target_type_not_attackable", nil, 0)
-	}
-	if targetID == "" {
-		return s.writeAttackResult(conn, playerID, req.RequestID, false,
-			"attack_target_required", nil, 0)
+			"target_not_selected", nil, 0)
 	}
 
-	target, exists := s.resolveTargetLocked(playerID, targetType, targetID)
-	if !exists {
+	// Only entities with implemented combat reach can be attacked in this step.
+	// Adding NPCs or other targetable entities later requires an explicit combat rule.
+	if target.Type != "monster" && target.Type != "player" {
 		return s.writeAttackResult(conn, playerID, req.RequestID, false,
-			"target_not_found", nil, 0)
+			"target_type_not_attackable", target, 0)
 	}
 
 	attacker, exists := s.storedPlayerState(playerID)
 	if !exists || !attacker.Online {
 		return s.writeAttackResult(conn, playerID, req.RequestID, false,
-			"attacker_state_unavailable", &target, 0)
+			"attacker_state_unavailable", target, 0)
 	}
 
-	targetPosition, targetRadius, exists := s.attackTargetInfo(target, attacker.Position)
+	targetPosition, targetRadius, exists := s.attackTargetInfo(*target, attacker.Position)
 	if !exists {
 		return s.writeAttackResult(conn, playerID, req.RequestID, false,
 			"target_not_found", nil, 0)
@@ -98,13 +93,13 @@ func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error
 	maxDistance := PlayerColliderRadius + targetRadius + MeleeAttackRangeAllowance
 	if distance > maxDistance {
 		return s.writeAttackResult(conn, playerID, req.RequestID, false,
-			"attack_out_of_range", &target, outOfRangeRetryDelay)
+			"attack_out_of_range", target, outOfRangeRetryDelay)
 	}
 
 	accepted, speed, retryAfter := s.acceptAttackAttempt(playerID, time.Now())
 	if !accepted {
 		return s.writeAttackResult(conn, playerID, req.RequestID, false,
-			"attack_cooldown", &target, retryAfter)
+			"attack_cooldown", target, retryAfter)
 	}
 
 	s.logger.Printf(
@@ -115,7 +110,7 @@ func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error
 		Success:     boolPointer(true),
 		Message:     "attack_accepted",
 		PlayerID:    playerID,
-		Target:      &target,
+		Target:      target,
 		RequestID:   req.RequestID,
 		AttackSpeed: speed,
 	})
