@@ -68,6 +68,9 @@ type Server struct {
 	stateFile       string
 	stateSaveInterval time.Duration
 
+	// movementMu serializes collision resolution and position acceptance across clients.
+	// Without it, two concurrent requests could both pass against stale player positions.
+	movementMu     sync.Mutex
 	playersMu      sync.RWMutex
 	playerStates   map[string]PlayerState
 	playerSessions map[string]net.Conn
@@ -909,6 +912,10 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 	}
 
 	requestedPosition := worldmap.Vec3{X: x, Y: y, Z: z}
+
+	// Resolve and commit the next accepted transform atomically relative to other
+	// clients' movement requests. The mutex is released before writing any response.
+	s.movementMu.Lock()
 	acceptedPosition := requestedPosition
 	previousState, alreadyKnown := s.storedPlayerState(playerID)
 	if alreadyKnown {
@@ -943,6 +950,7 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 	s.playerStates[playerID] = state
 	s.stateVersion++
 	s.playersMu.Unlock()
+	s.movementMu.Unlock()
 
 	s.logPlayerState(state)
 
