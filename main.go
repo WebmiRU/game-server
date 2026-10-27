@@ -28,11 +28,14 @@ func main() {
 		fatalErrorf("resolve fixed world map directory: %v", err)
 	}
 
-	loadedWorld, err := worldmap.LoadDir(mapDir)
+	var loadedWorld *worldmap.Map
+	loadedWorld, err = worldmap.LoadDir(mapDir)
 	if err != nil {
-		fatalErrorf("load world map from fixed project data directory %q: %v", mapDir, err)
+		logging.Errorf(log.Default(), "load world map from fixed project data directory %q: %v", mapDir, err)
+		log.Printf("starting without a world map; TCP authentication stays available, world queries are disabled")
+	} else {
+		log.Printf("world map loaded from %q", mapDir)
 	}
-	log.Printf("world map loaded from %q", mapDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
