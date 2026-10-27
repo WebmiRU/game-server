@@ -57,8 +57,9 @@ type Server struct {
 	maxMessageBytes int
 	spawnPoint      worldmap.Vec3
 
-	playersMu    sync.RWMutex
-	playerStates map[string]PlayerState
+	playersMu     sync.RWMutex
+	playerStates  map[string]PlayerState
+	playerSessions map[string]net.Conn
 
 	connectionsMu sync.Mutex
 	connections   map[net.Conn]struct{}
@@ -94,8 +95,9 @@ func New(config Config) *Server {
 		logger:          logger,
 		maxMessageBytes: maxMessageBytes,
 		spawnPoint:      spawnPoint,
-		playerStates:    make(map[string]PlayerState),
-		connections:     make(map[net.Conn]struct{}),
+		playerStates:   make(map[string]PlayerState),
+		playerSessions: make(map[string]net.Conn),
+		connections:    make(map[net.Conn]struct{}),
 	}
 }
 
@@ -245,13 +247,30 @@ func (s *Server) PlayerStates() []PlayerState {
 	return states
 }
 
-func (s *Server) removePlayerState(playerID string) {
+func (s *Server) registerPlayerSession(playerID string, conn net.Conn) bool {
+	s.playersMu.Lock()
+	defer s.playersMu.Unlock()
+
+	if existing, ok := s.playerSessions[playerID]; ok && existing != conn {
+		return false
+	}
+	s.playerSessions[playerID] = conn
+	return true
+}
+
+func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 	if playerID == "" {
 		return
 	}
 	s.playersMu.Lock()
+	defer s.playersMu.Unlock()
+
+	// An older connection must not remove the state of a newer session.
+	if current, ok := s.playerSessions[playerID]; !ok || current != conn {
+		return
+	}
+	delete(s.playerSessions, playerID)
 	delete(s.playerStates, playerID)
-	s.playersMu.Unlock()
 }
 
 func (s *Server) closeConnections() {
@@ -276,7 +295,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		_ = conn.Close()
 		s.unregisterConnection(conn)
 		if authenticated {
-			s.removePlayerState(username)
+			s.removePlayerState(username, conn)
 		}
 	}()
 
@@ -356,6 +375,19 @@ func (s *Server) handleConnection(conn net.Conn) {
 					return
 				}
 				continue
+			}
+
+			if !s.registerPlayerSession(req.Username, conn) {
+				s.logger.Printf(
+					"TCP authentication rejected: username=%q reason=already_logged_in remote=%s",
+					req.Username, conn.RemoteAddr(),
+				)
+				_ = s.writeResponse(conn, response{
+					Type:    "auth_result",
+					Success: boolPointer(false),
+					Message: "already_logged_in",
+				})
+				return
 			}
 
 			authenticated = true
