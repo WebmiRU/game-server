@@ -23,6 +23,7 @@ import (
 )
 
 const (
+	DefaultPlayerMaxHealth = 100
 	ProtocolVersion = 1
 	defaultAddress = ":7777"
 	defaultMaxLine = 4096
@@ -199,6 +200,8 @@ type PlayerState struct {
 	PlayerID  string         `json:"playerId"`
 	Position  worldmap.Vec3  `json:"position"`
 	Rotation  PlayerRotation `json:"rotation"`
+	Health    int            `json:"health"`
+	MaxHealth int            `json:"maxHealth"`
 	UpdatedAt time.Time      `json:"updatedAt"`
 	Online    bool           `json:"-"`
 }
@@ -206,6 +209,19 @@ type PlayerState struct {
 type playerStateFile struct {
 	Version int                    `json:"version"`
 	Players map[string]PlayerState `json:"players"`
+}
+
+func normalizePlayerHealth(state PlayerState) PlayerState {
+	if state.MaxHealth <= 0 {
+		state.MaxHealth = DefaultPlayerMaxHealth
+	}
+	if state.Health <= 0 {
+		state.Health = state.MaxHealth
+	}
+	if state.Health > state.MaxHealth {
+		state.Health = state.MaxHealth
+	}
+	return state
 }
 
 type movementProgressState struct {
@@ -234,6 +250,8 @@ type response struct {
 	VisibilityRange *float64           `json:"visibilityRange,omitempty"`
 	Target          *TargetReference    `json:"target,omitempty"`
 	AttackSpeed     float64             `json:"attackSpeed,omitempty"`
+	PlayerHealth    int                 `json:"playerHealth,omitempty"`
+	PlayerMaxHealth int                 `json:"playerMaxHealth,omitempty"`
 	RetryAfter      float64             `json:"retryAfter,omitempty"`
 	RequestID       int                 `json:"requestId,omitempty"`
 	Players         []NearbyPlayer      `json:"players,omitempty"`
@@ -492,6 +510,8 @@ func (s *Server) spawnResponseForPlayer(playerID string) response {
 			PlayerID:  playerID,
 			Position:  position,
 			Rotation:  identityRotation,
+			Health:    DefaultPlayerMaxHealth,
+			MaxHealth: DefaultPlayerMaxHealth,
 			UpdatedAt: time.Now().UTC(),
 			Online:    true,
 		}
@@ -668,7 +688,7 @@ func (s *Server) loadPlayerStates() error {
 		state.Rotation.Y /= length
 		state.Rotation.Z /= length
 		state.Rotation.W /= length
-		loaded[playerID] = state
+		loaded[playerID] = normalizePlayerHealth(state)
 	}
 
 	s.playersMu.Lock()
@@ -1023,6 +1043,8 @@ func (s *Server) handleWorldInterest(conn net.Conn, playerID string, req request
 		VisibilityRange: float64Pointer(radius),
 		Target:           s.currentPlayerTarget(playerID),
 		Players:          players,
+		PlayerHealth:     state.Health,
+		PlayerMaxHealth:  state.MaxHealth,
 		Monsters:         monsters,
 		Items:            items,
 		AttackSpeed:      s.PlayerAttackSpeed(playerID),
@@ -1223,9 +1245,18 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 			Z: qz / quaternionLength,
 			W: qw / quaternionLength,
 		},
+		Health:    DefaultPlayerMaxHealth,
+		MaxHealth: DefaultPlayerMaxHealth,
 		UpdatedAt: time.Now().UTC(),
 		Online:    true,
 	}
+
+	// Movement updates must never reset server-owned health from client input.
+	if previous, exists := s.storedPlayerState(playerID); exists {
+		state.Health = previous.Health
+		state.MaxHealth = previous.MaxHealth
+	}
+
 
 	s.playersMu.Lock()
 	s.playerStates[playerID] = state
