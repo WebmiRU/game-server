@@ -17,7 +17,7 @@ const (
 	MaxVisibilityRange     = 500.0
 	monsterGravity         = 9.81
 	monsterPhysicsTick     = 50 * time.Millisecond
-	// Death animation (1s) + five-second wait + smooth fade (1.5s), with a small cleanup margin.
+	// Death animation (1s) + five seconds on the ground + one-second fade = seven seconds total.
 	MonsterCorpseRetention = 7 * time.Second
 )
 
