@@ -34,6 +34,7 @@ type MonsterState struct {
 	Health     int               `json:"health"`
 	MaxHealth  int               `json:"maxHealth"`
 	Alive      bool              `json:"alive"`
+	Action     string            `json:"action"`
 	AIState    string            `json:"aiState"`
 }
 
@@ -89,6 +90,7 @@ func (s *Server) seedTestMonsters() {
 			Health:     100,
 			MaxHealth:  100,
 			Alive:      true,
+			Action:     "idle",
 			AIState:    "idle",
 		}
 		s.monsters[monster.ID] = monster
@@ -112,6 +114,12 @@ func (s *Server) UpsertMonster(monster MonsterState) bool {
 	}
 	if monster.MaxHealth > 0 && monster.Health > monster.MaxHealth {
 		monster.Health = monster.MaxHealth
+	}
+	if strings.TrimSpace(monster.Action) == "" {
+		monster.Action = "idle"
+	}
+	if strings.TrimSpace(monster.AIState) == "" {
+		monster.AIState = "idle"
 	}
 
 	s.entitiesMu.Lock()
