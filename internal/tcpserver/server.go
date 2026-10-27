@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +57,9 @@ type Server struct {
 	maxMessageBytes int
 	spawnPoint      worldmap.Vec3
 
+	playersMu    sync.RWMutex
+	playerStates map[string]PlayerState
+
 	connectionsMu sync.Mutex
 	connections   map[net.Conn]struct{}
 	shuttingDown  bool
@@ -89,16 +94,39 @@ func New(config Config) *Server {
 		logger:          logger,
 		maxMessageBytes: maxMessageBytes,
 		spawnPoint:      spawnPoint,
+		playerStates:    make(map[string]PlayerState),
 		connections:     make(map[net.Conn]struct{}),
 	}
 }
 
 type request struct {
-	Type     string   `json:"type"`
-	Username string   `json:"username,omitempty"`
-	Password string   `json:"password,omitempty"`
-	X        *float64 `json:"x,omitempty"`
-	Z        *float64 `json:"z,omitempty"`
+	Type      string   `json:"type"`
+	Username  string   `json:"username,omitempty"`
+	Password  string   `json:"password,omitempty"`
+	X         *float64 `json:"x,omitempty"`
+	Y         *float64 `json:"y,omitempty"`
+	Z         *float64 `json:"z,omitempty"`
+	RotationX *float64 `json:"rotationX,omitempty"`
+	RotationY *float64 `json:"rotationY,omitempty"`
+	RotationZ *float64 `json:"rotationZ,omitempty"`
+	RotationW *float64 `json:"rotationW,omitempty"`
+}
+
+// PlayerRotation is a normalized 3D quaternion.
+type PlayerRotation struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	Z float64 `json:"z"`
+	W float64 `json:"w"`
+}
+
+// PlayerState stores the last server-accepted transform for one connected player.
+// Position is the character Transform.position (the capsule root), not the ground point.
+type PlayerState struct {
+	PlayerID  string         `json:"playerId"`
+	Position  worldmap.Vec3  `json:"position"`
+	Rotation  PlayerRotation `json:"rotation"`
+	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
 type response struct {
@@ -202,6 +230,30 @@ func (s *Server) unregisterConnection(conn net.Conn) {
 	s.connectionsMu.Unlock()
 }
 
+// PlayerStates returns a consistent snapshot, safe for future replication or interest management.
+func (s *Server) PlayerStates() []PlayerState {
+	s.playersMu.RLock()
+	states := make([]PlayerState, 0, len(s.playerStates))
+	for _, state := range s.playerStates {
+		states = append(states, state)
+	}
+	s.playersMu.RUnlock()
+
+	sort.Slice(states, func(i, j int) bool {
+		return states[i].PlayerID < states[j].PlayerID
+	})
+	return states
+}
+
+func (s *Server) removePlayerState(playerID string) {
+	if playerID == "" {
+		return
+	}
+	s.playersMu.Lock()
+	delete(s.playerStates, playerID)
+	s.playersMu.Unlock()
+}
+
 func (s *Server) closeConnections() {
 	s.connectionsMu.Lock()
 	s.shuttingDown = true
@@ -218,17 +270,20 @@ func (s *Server) closeConnections() {
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
+	authenticated := false
+	username := ""
 	defer func() {
 		_ = conn.Close()
 		s.unregisterConnection(conn)
+		if authenticated {
+			s.removePlayerState(username)
+		}
 	}()
 
 	s.logger.Printf("TCP client connected: %s", conn.RemoteAddr())
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 1024), s.maxMessageBytes)
 
-	authenticated := false
-	username := ""
 	authAttempts := 0
 
 	for {
@@ -339,13 +394,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		if err := s.handleAuthenticatedRequest(conn, req); err != nil {
+		if err := s.handleAuthenticatedRequest(conn, username, req); err != nil {
 			return
 		}
 	}
 }
 
-func (s *Server) handleAuthenticatedRequest(conn net.Conn, req request) error {
+func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req request) error {
 	switch req.Type {
 	case "ping":
 		return s.writeResponse(conn, response{
@@ -367,6 +422,9 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, req request) error {
 			Success: boolPointer(true),
 			World:   &info,
 		})
+
+	case "player_state":
+		return s.handlePlayerState(conn, playerID, req)
 
 	case "height_at":
 		if req.X == nil || req.Z == nil {
@@ -404,6 +462,89 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, req request) error {
 			Message: "unknown_message_type",
 		})
 	}
+}
+
+func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) error {
+	if req.X == nil || req.Y == nil || req.Z == nil ||
+		req.RotationX == nil || req.RotationY == nil ||
+		req.RotationZ == nil || req.RotationW == nil {
+		return s.writeResponse(conn, response{
+			Type:    "player_state_result",
+			Success: boolPointer(false),
+			Message: "position_and_rotation_required",
+		})
+	}
+
+	x, y, z := *req.X, *req.Y, *req.Z
+	qx, qy, qz, qw := *req.RotationX, *req.RotationY, *req.RotationZ, *req.RotationW
+	if !finiteNumber(x) || !finiteNumber(y) || !finiteNumber(z) ||
+		!finiteNumber(qx) || !finiteNumber(qy) || !finiteNumber(qz) || !finiteNumber(qw) {
+		return s.writeResponse(conn, response{
+			Type:    "player_state_result",
+			Success: boolPointer(false),
+			Message: "non_finite_transform",
+		})
+	}
+
+	quaternionLength := math.Sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+	if quaternionLength < 1e-9 {
+		return s.writeResponse(conn, response{
+			Type:    "player_state_result",
+			Success: boolPointer(false),
+			Message: "invalid_rotation",
+		})
+	}
+
+	if s.world != nil {
+		if _, insideWorld := s.world.HeightAtWorld(x, z); !insideWorld {
+			return s.writeResponse(conn, response{
+				Type:    "player_state_result",
+				Success: boolPointer(false),
+				Message: "coordinates_outside_world",
+			})
+		}
+		world := s.world.Summary()
+		if y < world.Origin.Y-5 || y > world.Origin.Y+world.Size.Y+5 {
+			return s.writeResponse(conn, response{
+				Type:    "player_state_result",
+				Success: boolPointer(false),
+				Message: "height_outside_world",
+			})
+		}
+	}
+
+	state := PlayerState{
+		PlayerID: playerID,
+		Position: worldmap.Vec3{X: x, Y: y, Z: z},
+		Rotation: PlayerRotation{
+			X: qx / quaternionLength,
+			Y: qy / quaternionLength,
+			Z: qz / quaternionLength,
+			W: qw / quaternionLength,
+		},
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	s.playersMu.Lock()
+	_, alreadyKnown := s.playerStates[playerID]
+	s.playerStates[playerID] = state
+	s.playersMu.Unlock()
+
+	// Acknowledge only the first accepted transform. A reply for every tick would
+	// double the steady-state network traffic for thousands of connected players.
+	if !alreadyKnown {
+		return s.writeResponse(conn, response{
+			Type:     "player_state_result",
+			Success:  boolPointer(true),
+			Message:  "state_registered",
+			PlayerID: playerID,
+		})
+	}
+	return nil
+}
+
+func finiteNumber(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func (s *Server) writeResponse(conn net.Conn, value response) error {
