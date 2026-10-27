@@ -776,7 +776,10 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 		t.Fatalf("selection response = %+v, want target-near", selectionResponse)
 	}
 
-	sendRequest(t, conn, testRequest{Type: "attack", RequestID: 101})
+	// Even if a client tries to supply a conflicting ID, the server's target wins.
+	sendRequest(t, conn, testRequest{
+		Type: "attack", TargetType: "monster", TargetID: "target-far", RequestID: 101,
+	})
 	attackResponse := readWireResponse(t, scanner)
 	if attackResponse.Type != "attack_result" {
 		t.Fatalf("attack response type = %q, want attack_result", attackResponse.Type)
@@ -819,6 +822,9 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 	assertSuccess(t, rangeResponse, false)
 	if rangeResponse.Message != "attack_out_of_range" || rangeResponse.RequestID != 103 {
 		t.Fatalf("out-of-range response = %+v", rangeResponse)
+	}
+	if rangeResponse.Target == nil || rangeResponse.Target.ID != "target-far" {
+		t.Fatalf("out-of-range response target = %+v, want server-selected target-far", rangeResponse.Target)
 	}
 }
 
