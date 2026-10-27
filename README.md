@@ -36,10 +36,10 @@ The map directory must contain the Unity exporter outputs `manifest.json` and `t
 For example, from the game-server repository root on Windows PowerShell, assuming `game-client` and `game-server` are sibling folders:
 
 ```powershell
-New-Item -ItemType Directory -Force data\world\starter
-Copy-Item ..\game-client\WorldExport\SampleScene\Terrain\manifest.json data\world\starter\
-Copy-Item ..\game-client\WorldExport\SampleScene\Terrain\terrain.u16 data\world\starter\
-go run . -addr :7777 -map-dir data\world\starter -require-map
+New-Item -ItemType Directory -Force data
+Copy-Item ..\game-client\WorldExport\SampleScene\Terrain\manifest.json data\
+Copy-Item ..\game-client\WorldExport\SampleScene\Terrain\terrain.u16 data\
+go run . -addr :7777 -map-dir data -require-map
 ```
 
 Change `SampleScene\Terrain` if Unity exported under a different scene or Terrain name.
