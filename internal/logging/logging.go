@@ -5,13 +5,13 @@ import (
 	"os"
 )
 
-// Errorf writes errors to stderr in red, regardless of the destination of the
-// normal logger. Ordinary log output remains on stdout.
+// Errorf writes error messages to stderr. Ordinary application logs belong on stdout;
+// the console decides how to visually distinguish stderr from stdout.
 func Errorf(logger *log.Logger, format string, args ...any) {
 	if logger == nil {
 		logger = log.Default()
 	}
 
 	errorLogger := log.New(os.Stderr, logger.Prefix(), logger.Flags())
-	errorLogger.Printf("\x1b[31mERROR: "+format+"\x1b[0m", args...)
+	errorLogger.Printf("ERROR: "+format, args...)
 }
