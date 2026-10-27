@@ -211,6 +211,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 	}()
 	go s.runStatePersistence(ctx, finished)
+	go s.runMonsterSimulation(ctx, finished)
 
 	defer func() {
 		close(finished)
