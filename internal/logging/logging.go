@@ -2,13 +2,16 @@ package logging
 
 import (
 	"log"
+	"os"
 )
 
-// Errorf writes an error in red while leaving ordinary log output untouched.
-// GoLand's Run console understands ANSI escape sequences.
+// Errorf writes errors to stderr in red, regardless of the destination of the
+// normal logger. Ordinary log output remains on stdout.
 func Errorf(logger *log.Logger, format string, args ...any) {
 	if logger == nil {
 		logger = log.Default()
 	}
-	logger.Printf("\x1b[31mERROR: "+format+"\x1b[0m", args...)
+
+	errorLogger := log.New(os.Stderr, logger.Prefix(), logger.Flags())
+	errorLogger.Printf("\x1b[31mERROR: "+format+"\x1b[0m", args...)
 }
