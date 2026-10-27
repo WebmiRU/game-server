@@ -307,7 +307,10 @@ func (s *Server) playerPositionCollides(playerID string, position worldmap.Vec3)
 	s.entitiesMu.RLock()
 	defer s.entitiesMu.RUnlock()
 	for _, monster := range s.monsters {
-		if !monster.Alive {
+		if !monster.Alive || monster.falling {
+			// Falling monsters yield to players. The monster simulation resolves their
+			// overlap by moving the monster, so player movement never displaces a player
+			// merely because a mob spawned above them.
 			continue
 		}
 		collider := colliderForMonster(monster)
@@ -341,6 +344,80 @@ func (s *Server) playerPositionCollides(playerID string, position worldmap.Vec3)
 		}
 	}
 	return false
+}
+
+// monsterOverlapsPlayerAt reports a collision for a monster bottom-centred at position.
+func monsterOverlapsPlayerAt(monster MonsterState, position worldmap.Vec3, player PlayerState) bool {
+	collider := colliderForMonster(monster)
+	height := collider.Height
+	if collider.Shape == ColliderBox && collider.Size.Y > 0 {
+		height = collider.Size.Y
+	}
+	if height <= 0 {
+		height = 2
+	}
+	if !verticalIntervalsOverlap(position.Y, height, player.Position.Y, PlayerColliderHeight) {
+		return false
+	}
+
+	if collider.Shape == ColliderBox {
+		return circleOverlapsRotatedBox(
+			player.Position.X, player.Position.Z, PlayerColliderRadius,
+			position.X, position.Z, collider.Size.X, collider.Size.Z, monster.Rotation)
+	}
+	radius := collider.Radius
+	if radius <= 0 {
+		radius = 1
+	}
+	return circlesOverlapXZ(
+		position.X, position.Z, radius,
+		player.Position.X, player.Position.Z, PlayerColliderRadius)
+}
+
+// findMonsterPositionAwayFromPlayers moves a falling monster to the nearest nearby X/Z
+// position that does not intersect any active player's collider. Its altitude is preserved;
+// terrain height is recalculated by the caller after a successful shift.
+func (s *Server) findMonsterPositionAwayFromPlayers(
+	monster MonsterState,
+	position worldmap.Vec3,
+	players []PlayerState,
+) (worldmap.Vec3, bool) {
+	overlapsPlayer := func(candidate worldmap.Vec3) bool {
+		for _, player := range players {
+			if monsterOverlapsPlayerAt(monster, candidate, player) {
+				return true
+			}
+		}
+		return false
+	}
+	if !overlapsPlayer(position) {
+		return position, true
+	}
+
+	const (
+		maxShiftDistance = 6.0
+		shiftStep        = 0.25
+		shiftDirections  = 32
+	)
+	steps := int(math.Ceil(maxShiftDistance / shiftStep))
+	for ring := 1; ring <= steps; ring++ {
+		distance := math.Min(float64(ring)*shiftStep, maxShiftDistance)
+		for direction := 0; direction < shiftDirections; direction++ {
+			angle := 2 * math.Pi * float64(direction) / shiftDirections
+			candidate := position
+			candidate.X += math.Cos(angle) * distance
+			candidate.Z += math.Sin(angle) * distance
+			if s.world != nil {
+				if _, insideWorld := s.world.HeightAtWorld(candidate.X, candidate.Z); !insideWorld {
+					continue
+				}
+			}
+			if !overlapsPlayer(candidate) {
+				return candidate, true
+			}
+		}
+	}
+	return position, false
 }
 
 func verticalIntervalsOverlap(aBottom, aHeight, bBottom, bHeight float64) bool {
