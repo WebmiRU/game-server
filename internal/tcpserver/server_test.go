@@ -758,9 +758,25 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 		t.Fatal("failed to set attack speed")
 	}
 
+	// A command without a server-selected target must be rejected.
+	sendRequest(t, conn, testRequest{Type: "attack", RequestID: 100})
+	noTargetResponse := readWireResponse(t, scanner)
+	assertSuccess(t, noTargetResponse, false)
+	if noTargetResponse.Message != "target_not_selected" {
+		t.Fatalf("no-target attack response = %+v", noTargetResponse)
+	}
+
+	// Selection is a separate protocol command. Attack itself carries no target ID.
 	sendRequest(t, conn, testRequest{
-		Type: "attack", TargetType: "monster", TargetID: "target-near", RequestID: 101,
+		Type: "set_target", TargetType: "monster", TargetID: "target-near",
 	})
+	selectionResponse := readWireResponse(t, scanner)
+	if selectionResponse.Type != "target_result" || selectionResponse.Target == nil ||
+		selectionResponse.Target.ID != "target-near" {
+		t.Fatalf("selection response = %+v, want target-near", selectionResponse)
+	}
+
+	sendRequest(t, conn, testRequest{Type: "attack", RequestID: 101})
 	attackResponse := readWireResponse(t, scanner)
 	if attackResponse.Type != "attack_result" {
 		t.Fatalf("attack response type = %q, want attack_result", attackResponse.Type)
@@ -777,9 +793,7 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 	}
 
 	// A second attack within the server-controlled interval is rejected.
-	sendRequest(t, conn, testRequest{
-		Type: "attack", TargetType: "monster", TargetID: "target-near", RequestID: 102,
-	})
+	sendRequest(t, conn, testRequest{Type: "attack", RequestID: 102})
 	cooldownResponse := readWireResponse(t, scanner)
 	assertSuccess(t, cooldownResponse, false)
 	if cooldownResponse.Type != "attack_result" || cooldownResponse.Message != "attack_cooldown" {
@@ -789,10 +803,18 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 		t.Fatalf("retryAfter = %.3f, want positive cooldown", cooldownResponse.RetryAfter)
 	}
 
-	// Range is validated before the cooldown so the client can resume approach immediately.
+	// Switch the server-side target, then ensure the targetless attack command uses it.
 	sendRequest(t, conn, testRequest{
-		Type: "attack", TargetType: "monster", TargetID: "target-far", RequestID: 103,
+		Type: "set_target", TargetType: "monster", TargetID: "target-far",
 	})
+	farSelection := readWireResponse(t, scanner)
+	if farSelection.Type != "target_result" || farSelection.Target == nil ||
+		farSelection.Target.ID != "target-far" {
+		t.Fatalf("far selection response = %+v, want target-far", farSelection)
+	}
+
+	// Range is validated before the cooldown so the client can resume approach immediately.
+	sendRequest(t, conn, testRequest{Type: "attack", RequestID: 103})
 	rangeResponse := readWireResponse(t, scanner)
 	assertSuccess(t, rangeResponse, false)
 	if rangeResponse.Message != "attack_out_of_range" || rangeResponse.RequestID != 103 {
