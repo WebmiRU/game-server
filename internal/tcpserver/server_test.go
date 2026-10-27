@@ -484,23 +484,16 @@ func TestSavedPlayerHeightReconcilesAfterTerrainHeightmapChanges(t *testing.T) {
 
 func TestGroundHeightAdjustmentUsesNonBlockingCorrection(t *testing.T) {
 	world := createTestWorldMap(t)
-	server := New(Config{
-		World:  world,
-		Logger: log.New(io.Discard, "", 0),
-	})
 	position := worldmap.Vec3{X: 0.5, Z: 0.5}
+	server := New(Config{
+		World:      world,
+		SpawnPoint: &position,
+		Logger:     log.New(io.Discard, "", 0),
+	})
 	groundY, ok := world.HeightAtWorld(position.X, position.Z)
 	if !ok {
 		t.Fatal("test position is outside the fixture world")
 	}
-	server.playerStates["player1"] = PlayerState{
-		PlayerID: "player1",
-		Position: worldmap.Vec3{X: position.X, Y: groundY + 0.05, Z: position.Z},
-		Rotation: PlayerRotation{W: 1},
-		UpdatedAt: time.Now().UTC(),
-		Online: true,
-	}
-	server.playerSessions["player1"] = nil
 
 	conn, scanner, _ := startPipeConnectionWithServer(t, server)
 	authenticateTestPlayer(t, conn, scanner)
