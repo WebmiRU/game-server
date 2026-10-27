@@ -202,8 +202,8 @@ func circleOverlapsRotatedBox(
 		boxDepth = 2
 	}
 
-	yaw := 2 * math.Atan2(
-		rotation.Y*rotation.W+rotation.X*rotation.Z,
+	yaw := math.Atan2(
+		2*(rotation.Y*rotation.W+rotation.X*rotation.Z),
 		1-2*(rotation.Y*rotation.Y+rotation.Z*rotation.Z),
 	)
 	cosYaw := math.Cos(yaw)
