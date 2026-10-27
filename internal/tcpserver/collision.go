@@ -99,29 +99,38 @@ func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap
 	}
 
 	current := from
-	for step := 1; step <= steps; step++ {
-		t := float64(step) / float64(steps)
+	stepX := dx / float64(steps)
+	stepY := (requested.Y - from.Y) / float64(steps)
+	stepZ := dz / float64(steps)
+	for step := 0; step < steps; step++ {
+		// Every substep starts at the last accepted location. Do not sample the original
+		// straight line after a block: doing so could jump from one side of a collider
+		// to the other if the final sample happened to be clear.
 		next := worldmap.Vec3{
-			X: from.X + dx*t,
-			Y: from.Y + (requested.Y-from.Y)*t,
-			Z: from.Z + dz*t,
+			X: current.X + stepX,
+			Y: current.Y + stepY,
+			Z: current.Z + stepZ,
 		}
 		if !s.playerPositionCollides(playerID, next) {
 			current = next
 			continue
 		}
 
-		// Try horizontal axes separately, preserving the server's vertical interpolation.
-		xOnly := current
-		xOnly.X = next.X
-		xOnly.Y = next.Y
+		// Try horizontal axes separately, preserving vertical progress when possible.
+		xOnly := worldmap.Vec3{
+			X: current.X + stepX,
+			Y: current.Y + stepY,
+			Z: current.Z,
+		}
 		if !s.playerPositionCollides(playerID, xOnly) {
 			current = xOnly
 		}
 
-		zOnly := current
-		zOnly.Z = next.Z
-		zOnly.Y = next.Y
+		zOnly := worldmap.Vec3{
+			X: current.X,
+			Y: current.Y + stepY,
+			Z: current.Z + stepZ,
+		}
 		if !s.playerPositionCollides(playerID, zOnly) {
 			current = zOnly
 		}
