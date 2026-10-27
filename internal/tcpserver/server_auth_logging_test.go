@@ -21,6 +21,14 @@ func TestAuthenticationLogsUsernameAndOutcomeWithoutPassword(t *testing.T) {
 		response := readWireResponse(t, scanner)
 		assertSuccess(t, response, true)
 
+		// Make the handler process the next request too, so its preceding auth log
+		// write has completed before inspecting the in-memory log buffer.
+		sendRequest(t, conn, testRequest{Type: "ping"})
+		pingResponse := readWireResponse(t, scanner)
+		if pingResponse.Type != "pong" {
+			t.Fatalf("ping response type = %q, want pong", pingResponse.Type)
+		}
+
 		output := logOutput.String()
 		if !strings.Contains(output, "TCP authentication succeeded") {
 			t.Fatalf("success event missing from log: %q", output)
