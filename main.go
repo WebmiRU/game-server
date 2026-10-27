@@ -48,7 +48,8 @@ func main() {
 	server := tcpserver.New(tcpserver.Config{
 		Address: *address,
 		World:   loadedWorld,
-		Logger:  appLogger,
+		Logger:    appLogger,
+		StateFile: filepath.Join(mapDir, "player_states.json"),
 	})
 
 	appLogger.Printf("starting game server (protocol v%d)", tcpserver.ProtocolVersion)
