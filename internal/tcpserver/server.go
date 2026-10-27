@@ -11,6 +11,8 @@ import (
 	"log"
 	"math"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +29,9 @@ const (
 	maxAuthAttempts = 5
 	readTimeout    = 10 * time.Minute
 	writeTimeout   = 10 * time.Second
+	defaultStateSaveInterval = time.Second
+	playerStateLogInterval = time.Second
+	playerStateFileVersion = 1
 )
 
 var developmentCredentials = map[string]string{
@@ -44,9 +49,13 @@ type Config struct {
 	World           *worldmap.Map
 	Logger          *log.Logger
 	MaxMessageBytes int
-	// SpawnPoint is the initial world-surface position sent after successful authentication.
+	// SpawnPoint is the initial world-surface position sent when no saved player state exists.
 	// If nil, the development spawn point is used.
 	SpawnPoint *worldmap.Vec3
+	// StateFile stores the last accepted player transform for each player ID. Empty disables persistence.
+	StateFile string
+	// StateSaveInterval controls how often dirty state is flushed to JSON. Defaults to one second.
+	StateSaveInterval time.Duration
 }
 
 // Server authenticates TCP clients, tracks online transforms, and answers world queries.
@@ -56,10 +65,18 @@ type Server struct {
 	logger          *log.Logger
 	maxMessageBytes int
 	spawnPoint      worldmap.Vec3
+	stateFile       string
+	stateSaveInterval time.Duration
 
-	playersMu     sync.RWMutex
-	playerStates  map[string]PlayerState
+	playersMu      sync.RWMutex
+	playerStates   map[string]PlayerState
 	playerSessions map[string]net.Conn
+	stateVersion   uint64
+	savedVersion   uint64
+
+	stateSaveMu sync.Mutex
+	stateLogMu  sync.Mutex
+	lastStateLog time.Time
 
 	connectionsMu sync.Mutex
 	connections   map[net.Conn]struct{}
@@ -88,17 +105,27 @@ func New(config Config) *Server {
 	if config.SpawnPoint != nil {
 		spawnPoint = *config.SpawnPoint
 	}
-
-	return &Server{
-		address:         address,
-		world:           config.World,
-		logger:          logger,
-		maxMessageBytes: maxMessageBytes,
-		spawnPoint:      spawnPoint,
-		playerStates:   make(map[string]PlayerState),
-		playerSessions: make(map[string]net.Conn),
-		connections:    make(map[net.Conn]struct{}),
+	stateSaveInterval := config.StateSaveInterval
+	if stateSaveInterval <= 0 {
+		stateSaveInterval = defaultStateSaveInterval
 	}
+
+	server := &Server{
+		address:           address,
+		world:             config.World,
+		logger:            logger,
+		maxMessageBytes:   maxMessageBytes,
+		spawnPoint:        spawnPoint,
+		stateFile:         strings.TrimSpace(config.StateFile),
+		stateSaveInterval: stateSaveInterval,
+		playerStates:      make(map[string]PlayerState),
+		playerSessions:    make(map[string]net.Conn),
+		connections:       make(map[net.Conn]struct{}),
+	}
+	if err := server.loadPlayerStates(); err != nil {
+		logger.Printf("WARNING: cannot load player states from %q: %v; using fresh spawns", server.stateFile, err)
+	}
+	return server
 }
 
 type request struct {
@@ -129,6 +156,12 @@ type PlayerState struct {
 	Position  worldmap.Vec3  `json:"position"`
 	Rotation  PlayerRotation `json:"rotation"`
 	UpdatedAt time.Time      `json:"updatedAt"`
+	Online    bool           `json:"-"`
+}
+
+type playerStateFile struct {
+	Version int                    `json:"version"`
+	Players map[string]PlayerState `json:"players"`
 }
 
 type response struct {
@@ -142,6 +175,11 @@ type response struct {
 	X               *float64          `json:"x,omitempty"`
 	Y               *float64          `json:"y,omitempty"`
 	Z               *float64          `json:"z,omitempty"`
+	RotationX       *float64          `json:"rotationX,omitempty"`
+	RotationY       *float64          `json:"rotationY,omitempty"`
+	RotationZ       *float64          `json:"rotationZ,omitempty"`
+	RotationW       *float64          `json:"rotationW,omitempty"`
+	PositionIsRoot  bool              `json:"positionIsRoot,omitempty"`
 }
 
 // ListenAndServe starts the TCP listener and exits when ctx is cancelled or the listener fails.
@@ -160,11 +198,16 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		case <-finished:
 		}
 	}()
+	go s.runStatePersistence(ctx, finished)
+
 	defer func() {
 		close(finished)
 		_ = listener.Close()
 		s.closeConnections()
 		s.handlers.Wait()
+		if err := s.savePlayerStates(); err != nil {
+			logging.Errorf(s.logger, "save player states to %q on shutdown: %v", s.stateFile, err)
+		}
 	}()
 
 	s.logger.Printf("TCP server listening on %s", listener.Addr())
@@ -235,9 +278,11 @@ func (s *Server) unregisterConnection(conn net.Conn) {
 // PlayerStates returns a consistent snapshot, safe for future replication or interest management.
 func (s *Server) PlayerStates() []PlayerState {
 	s.playersMu.RLock()
-	states := make([]PlayerState, 0, len(s.playerStates))
-	for _, state := range s.playerStates {
-		states = append(states, state)
+	states := make([]PlayerState, 0, len(s.playerSessions))
+	for playerID := range s.playerSessions {
+		if state, ok := s.playerStates[playerID]; ok && state.Online {
+			states = append(states, state)
+		}
 	}
 	s.playersMu.RUnlock()
 
@@ -255,6 +300,10 @@ func (s *Server) registerPlayerSession(playerID string, conn net.Conn) bool {
 		return false
 	}
 	s.playerSessions[playerID] = conn
+	if state, ok := s.playerStates[playerID]; ok {
+		state.Online = true
+		s.playerStates[playerID] = state
+	}
 	return true
 }
 
@@ -265,12 +314,15 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 	s.playersMu.Lock()
 	defer s.playersMu.Unlock()
 
-	// An older connection must not remove the state of a newer session.
+	// An older connection must not alter a newer session or its current state.
 	if current, ok := s.playerSessions[playerID]; !ok || current != conn {
 		return
 	}
 	delete(s.playerSessions, playerID)
-	delete(s.playerStates, playerID)
+	if state, ok := s.playerStates[playerID]; ok {
+		state.Online = false
+		s.playerStates[playerID] = state
+	}
 }
 
 func (s *Server) closeConnections() {
@@ -401,13 +453,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}); err != nil {
 				return
 			}
-			if err := s.writeResponse(conn, response{
-				Type:    "spawn",
-				Success: boolPointer(true),
-				X:       float64Pointer(s.spawnPoint.X),
-				Y:       float64Pointer(s.spawnPoint.Y),
-				Z:       float64Pointer(s.spawnPoint.Z),
-			}); err != nil {
+			spawnResponse := s.spawnResponseForPlayer(username)
+			if err := s.writeResponse(conn, spawnResponse); err != nil {
 				return
 			}
 
@@ -555,21 +602,20 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 			W: qw / quaternionLength,
 		},
 		UpdatedAt: time.Now().UTC(),
+		Online:    true,
 	}
 
 	s.playersMu.Lock()
 	_, alreadyKnown := s.playerStates[playerID]
 	s.playerStates[playerID] = state
+	s.stateVersion++
 	s.playersMu.Unlock()
 
-	// Acknowledge only the first accepted transform. A reply for every tick would
-	// double the steady-state network traffic for thousands of connected players.
+	s.logPlayerState(state)
+
+	// Acknowledge only the first transform from a player without an existing state.
+	// A reply for every tick would double steady-state network traffic.
 	if !alreadyKnown {
-		s.logger.Printf(
-			"TCP player state registered: player=%q position=(%.2f, %.2f, %.2f) rotation=(%.4f, %.4f, %.4f, %.4f)",
-			playerID, state.Position.X, state.Position.Y, state.Position.Z,
-			state.Rotation.X, state.Rotation.Y, state.Rotation.Z, state.Rotation.W,
-		)
 		return s.writeResponse(conn, response{
 			Type:     "player_state_result",
 			Success:  boolPointer(true),
