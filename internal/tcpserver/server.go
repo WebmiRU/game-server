@@ -434,6 +434,14 @@ func (s *Server) loadPlayerStates() error {
 			s.logger.Printf("WARNING: ignoring invalid saved state for player=%q", playerID)
 			continue
 		}
+		length := math.Hypot(
+			math.Hypot(state.Rotation.X, state.Rotation.Y),
+			math.Hypot(state.Rotation.Z, state.Rotation.W),
+		)
+		state.Rotation.X /= length
+		state.Rotation.Y /= length
+		state.Rotation.Z /= length
+		state.Rotation.W /= length
 		loaded[playerID] = state
 	}
 
