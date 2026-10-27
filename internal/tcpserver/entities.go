@@ -565,7 +565,7 @@ func (s *Server) scheduleMonsterRespawnLocked(monster MonsterState) {
 // separate spawn-point configuration remains until the ten-second respawn time.
 func (s *Server) respawnDueMonsters(now time.Time) {
 	s.entitiesMu.Lock()
-	defer s.entitiesMu.Unlock()
+	spawnedMonsters := make([]MonsterState, 0)
 
 	for id, spawnPoint := range s.monsterSpawnPoints {
 		if spawnPoint.RespawnAt.IsZero() || now.Before(spawnPoint.RespawnAt) {
@@ -636,6 +636,7 @@ func (s *Server) respawnDueMonsters(now time.Time) {
 			spawnAt:             spawnedAt,
 		}
 		s.monsters[instanceID] = monster
+		spawnedMonsters = append(spawnedMonsters, monster)
 		spawnPoint.CurrentMonsterID = instanceID
 		spawnPoint.RespawnAt = time.Time{}
 		s.monsterSpawnPoints[id] = spawnPoint
@@ -643,6 +644,11 @@ func (s *Server) respawnDueMonsters(now time.Time) {
 		s.logger.Printf("monster respawned: id=%q template=%q health=%d position=(%.2f, %.2f, %.2f)",
 			monster.ID, monster.TemplateID, monster.Health,
 			monster.Position.X, monster.Position.Y, monster.Position.Z)
+	}
+	s.entitiesMu.Unlock()
+
+	for _, monster := range spawnedMonsters {
+		s.broadcastMonsterSpawned(monster, now)
 	}
 }
 
