@@ -792,10 +792,20 @@ func TestMonsterRespawnsAsFreshInstanceAfterTenSeconds(t *testing.T) {
 	if !ok || dead.Alive || dead.Health != 0 {
 		t.Fatalf("death state = %+v, ok=%v", dead, ok)
 	}
-	deathAt := dead.deathAt
-	if deathAt.IsZero() {
+	if dead.deathAt.IsZero() {
 		t.Fatal("death timestamp was not recorded")
 	}
+	// Shift this entity's clock into the past so the whole ten-second lifecycle can
+	// be tested synchronously without sleeping in the test suite.
+	deathAt := time.Now().Add(-11 * time.Second)
+	server.entitiesMu.Lock()
+	storedDead := server.monsters["respawn-test"]
+	storedDead.deathAt = deathAt
+	server.monsters["respawn-test"] = storedDead
+	storedSpawnPoint := server.monsterSpawnPoints["respawn-test"]
+	storedSpawnPoint.RespawnAt = deathAt.Add(MonsterRespawnDelay)
+	server.monsterSpawnPoints["respawn-test"] = storedSpawnPoint
+	server.entitiesMu.Unlock()
 
 	// The corpse is removed after seven seconds; only the spawn configuration remains.
 	server.pruneExpiredMonsterCorpses(deathAt.Add(MonsterCorpseRetention + time.Millisecond))
@@ -821,7 +831,7 @@ func TestMonsterRespawnsAsFreshInstanceAfterTenSeconds(t *testing.T) {
 		t.Fatalf("monster count before respawn due = %d, want 0", countBeforeDue)
 	}
 
-	server.respawnDueMonsters(deathAt.Add(MonsterRespawnDelay))
+	server.respawnDueMonsters(time.Now())
 	newID := "respawn-test-respawn-2"
 	server.entitiesMu.RLock()
 	respawned, exists := server.monsters[newID]
