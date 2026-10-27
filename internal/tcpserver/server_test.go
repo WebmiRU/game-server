@@ -36,6 +36,7 @@ type wireResponse struct {
 	RotationW       *float64           `json:"rotationW"`
 	PositionIsRoot  bool               `json:"positionIsRoot"`
 	VisibilityRange *float64           `json:"visibilityRange"`
+	AttackSpeed     float64             `json:"attackSpeed"`
 	Target          *TargetReference    `json:"target"`
 	Players         []NearbyPlayer      `json:"players"`
 	Monsters        []MonsterState      `json:"monsters"`
@@ -667,6 +668,10 @@ func TestWorldInterestReturnsOnlyNearbyEntitiesAndClampsRange(t *testing.T) {
 	}
 	assertSuccess(t, stateResponse, true)
 
+	if !server.SetPlayerAttackSpeed("player1", 2.5) {
+		t.Fatal("failed to set player's effective attack speed")
+	}
+
 	sendRequest(t, conn, testRequest{
 		Type:            "world_interest",
 		VisibilityRange: float64PointerForTest(20), // server enforces the minimum of 50
@@ -677,6 +682,9 @@ func TestWorldInterestReturnsOnlyNearbyEntitiesAndClampsRange(t *testing.T) {
 		t.Fatalf("response type = %q, want world_snapshot", response.Type)
 	}
 	assertSuccess(t, response, true)
+	if math.Abs(response.AttackSpeed-2.5) > 0.0001 {
+		t.Fatalf("snapshot attack speed = %.3f, want 2.5 attacks/second", response.AttackSpeed)
+	}
 	if response.VisibilityRange == nil || *response.VisibilityRange != MinVisibilityRange {
 		t.Fatalf("visibility range = %v, want clamped minimum %.0f", response.VisibilityRange, MinVisibilityRange)
 	}
@@ -685,6 +693,29 @@ func TestWorldInterestReturnsOnlyNearbyEntitiesAndClampsRange(t *testing.T) {
 	}
 	if len(response.Items) != 1 || response.Items[0].ID != "item-near" {
 		t.Fatalf("nearby items = %+v, want only item-near", response.Items)
+	}
+}
+
+func TestPlayerAttackSpeedDefaultsAndCanChange(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+
+	if got := server.PlayerAttackSpeed("player1"); got != DefaultAttackSpeed {
+		t.Fatalf("default attack speed = %.3f, want %.3f", got, DefaultAttackSpeed)
+	}
+	if !server.SetPlayerAttackSpeed("player1", 3.25) {
+		t.Fatal("valid attack speed update was rejected")
+	}
+	if got := server.PlayerAttackSpeed("player1"); got != 3.25 {
+		t.Fatalf("updated attack speed = %.3f, want 3.25", got)
+	}
+	if !server.SetPlayerAttackSpeed("player1", 100) || server.PlayerAttackSpeed("player1") != MaxAttackSpeed {
+		t.Fatalf("attack speed should be clamped to maximum %.1f", MaxAttackSpeed)
+	}
+	if server.SetPlayerAttackSpeed("player1", math.NaN()) {
+		t.Fatal("NaN attack speed should be rejected")
+	}
+	if server.SetPlayerAttackSpeed("", 2) {
+		t.Fatal("empty player ID should be rejected")
 	}
 }
 
