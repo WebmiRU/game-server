@@ -778,6 +778,82 @@ func TestApplyMonsterDamageMarksDeathAndRetainsCorpse(t *testing.T) {
 	}
 }
 
+func TestMonsterRespawnsAsFreshInstanceAfterTenSeconds(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	if !server.UpsertMonster(MonsterState{
+		ID: "respawn-test", TemplateID: "test-sphere-enemy", Name: "Respawn Test",
+		Position: worldmap.Vec3{X: 10, Y: 50, Z: 10},
+		Health: 50, MaxHealth: 50, Alive: true, Rotation: PlayerRotation{W: 1},
+	}) {
+		t.Fatal("failed to add monster")
+	}
+
+	dead, ok := server.applyMonsterDamage("respawn-test", 50)
+	if !ok || dead.Alive || dead.Health != 0 {
+		t.Fatalf("death state = %+v, ok=%v", dead, ok)
+	}
+	deathAt := dead.deathAt
+	if deathAt.IsZero() {
+		t.Fatal("death timestamp was not recorded")
+	}
+
+	// The corpse is removed after seven seconds; only the spawn configuration remains.
+	server.pruneExpiredMonsterCorpses(deathAt.Add(MonsterCorpseRetention + time.Millisecond))
+	server.entitiesMu.RLock()
+	_, oldEntityRetained := server.monsters["respawn-test"]
+	spawnPoint, spawnPointRetained := server.monsterSpawnPoints["respawn-test"]
+	server.entitiesMu.RUnlock()
+	if oldEntityRetained {
+		t.Fatal("expired corpse remains in monster entity registry")
+	}
+	if !spawnPointRetained {
+		t.Fatal("spawn configuration was removed along with the corpse")
+	}
+	if spawnPoint.CurrentMonsterID != "respawn-test" {
+		t.Fatalf("current spawn instance ID = %q, want old instance while waiting", spawnPoint.CurrentMonsterID)
+	}
+
+	server.respawnDueMonsters(deathAt.Add(MonsterRespawnDelay - time.Millisecond))
+	server.entitiesMu.RLock()
+	countBeforeDue := len(server.monsters)
+	server.entitiesMu.RUnlock()
+	if countBeforeDue != 0 {
+		t.Fatalf("monster count before respawn due = %d, want 0", countBeforeDue)
+	}
+
+	server.respawnDueMonsters(deathAt.Add(MonsterRespawnDelay))
+	newID := "respawn-test-respawn-2"
+	server.entitiesMu.RLock()
+	respawned, exists := server.monsters[newID]
+	_, oldEntityExists := server.monsters["respawn-test"]
+	currentSpawnPoint := server.monsterSpawnPoints["respawn-test"]
+	mappedSpawnID := server.monsterSpawnIDByEntity[newID]
+	server.entitiesMu.RUnlock()
+	if !exists {
+		t.Fatalf("new monster instance %q was not created", newID)
+	}
+	if oldEntityExists {
+		t.Fatal("old monster instance still exists after respawn")
+	}
+	if !respawned.Alive || respawned.Health != 50 || respawned.MaxHealth != 50 {
+		t.Fatalf("respawned monster health/state = %d/%d alive=%v, want fresh 50/50 alive", respawned.Health, respawned.MaxHealth, respawned.Alive)
+	}
+	if !respawned.falling || respawned.Action != "falling" || math.Abs(respawned.Position.Y-55) > 0.0001 {
+		t.Fatalf("respawned monster spawn = position:%+v falling:%v action:%q, want Y=55 falling from five units above ground",
+			respawned.Position, respawned.falling, respawned.Action)
+	}
+	if currentSpawnPoint.CurrentMonsterID != newID || mappedSpawnID != "respawn-test" {
+		t.Fatalf("spawn tracking = point:%q mapping:%q, want new instance mapped to stable spawn point",
+			currentSpawnPoint.CurrentMonsterID, mappedSpawnID)
+	}
+
+	_, monsters, _ := server.worldSnapshot("player1", worldmap.Vec3{X: 10, Y: 50, Z: 10}, 100)
+	if len(monsters) != 1 || monsters[0].ID != newID || !monsters[0].Spawning ||
+		monsters[0].SpawnElapsedSeconds < 0 {
+		t.Fatalf("respawn snapshot = %+v, want only new instance with spawn animation state", monsters)
+	}
+}
+
 func TestMeleeDamageUsesAttackerPositionRelativeToTargetFacing(t *testing.T) {
 	identity := PlayerRotation{W: 1}
 	tests := []struct {
