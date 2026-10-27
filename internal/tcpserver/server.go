@@ -350,8 +350,7 @@ func (s *Server) spawnResponseForPlayer(playerID string) response {
 	if state, ok := s.storedPlayerState(playerID); ok {
 		state = s.alignSavedPlayerToCurrentTerrain(playerID, state)
 		originalPosition := state.Position
-		position, changed, wasOverlapping := s.recoverSpawnOverlap(
-			playerID, state.Position, state.Rotation)
+		position, changed, wasOverlapping := s.recoverSpawnOverlap(playerID, state.Position)
 
 		if s.playerPositionCollides(playerID, position) {
 			s.logger.Printf(
@@ -375,7 +374,7 @@ func (s *Server) spawnResponseForPlayer(playerID string) response {
 
 			if wasOverlapping {
 				s.logger.Printf(
-					"player spawn collision recovered backwards: player=%q old=(%.3f, %.3f, %.3f) new=(%.3f, %.3f, %.3f) distance=%.3f",
+					"player spawn collision recovered to nearest free position: player=%q old=(%.3f, %.3f, %.3f) new=(%.3f, %.3f, %.3f) distance=%.3f",
 					playerID,
 					originalPosition.X, originalPosition.Y, originalPosition.Z,
 					position.X, position.Y, position.Z,
@@ -408,8 +407,7 @@ func (s *Server) spawnResponseForPlayer(playerID string) response {
 	rootPosition := spawn
 	rootPosition.Y += 0.05
 	identityRotation := PlayerRotation{W: 1}
-	position, changed, wasOverlapping := s.recoverSpawnOverlap(
-		playerID, rootPosition, identityRotation)
+	position, changed, wasOverlapping := s.recoverSpawnOverlap(playerID, rootPosition)
 	if s.playerPositionCollides(playerID, position) {
 		s.logger.Printf(
 			"ERROR: no collision-free initial spawn for player=%q at (%.3f, %.3f, %.3f)",
@@ -437,7 +435,7 @@ func (s *Server) spawnResponseForPlayer(playerID string) response {
 		s.playersMu.Unlock()
 
 		s.logger.Printf(
-			"initial spawn collision recovered backwards: player=%q old=(%.3f, %.3f, %.3f) new=(%.3f, %.3f, %.3f)",
+			"initial spawn collision recovered to nearest free position: player=%q old=(%.3f, %.3f, %.3f) new=(%.3f, %.3f, %.3f)",
 			playerID, rootPosition.X, rootPosition.Y, rootPosition.Z,
 			position.X, position.Y, position.Z)
 		return response{

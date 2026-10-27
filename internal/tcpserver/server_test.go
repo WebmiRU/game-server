@@ -482,14 +482,13 @@ func TestSavedPlayerHeightReconcilesAfterTerrainHeightmapChanges(t *testing.T) {
 	}
 }
 
-func TestReconnectPushesSavedPlayerBackUntilMonsterCollisionIsGone(t *testing.T) {
+func TestReconnectMovesSavedPlayerToNearestFreePosition(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 	savedPosition := worldmap.Vec3{X: 100, Y: 0, Z: 100}
-	savedRotation := PlayerRotation{W: 1} // faces +Z; recovery must move backwards toward -Z
 	savedState := PlayerState{
 		PlayerID:  "player1",
 		Position:  savedPosition,
-		Rotation:  savedRotation,
+		Rotation:  PlayerRotation{W: 1},
 		UpdatedAt: time.Now().UTC(),
 		Online:    true,
 	}
@@ -517,9 +516,9 @@ func TestReconnectPushesSavedPlayerBackUntilMonsterCollisionIsGone(t *testing.T)
 	}
 
 	resolved := worldmap.Vec3{X: *spawn.X, Y: *spawn.Y, Z: *spawn.Z}
-	if !(*spawn.Z < savedPosition.Z) {
-		t.Fatalf("player was not moved backwards from facing +Z: old Z=%.3f new Z=%.3f",
-			savedPosition.Z, *spawn.Z)
+	distance := math.Hypot(resolved.X-savedPosition.X, resolved.Z-savedPosition.Z)
+	if math.Abs(distance-1.25) > 0.001 {
+		t.Fatalf("recovery displacement = %.6f, want shortest displacement of 1.25m", distance)
 	}
 	if server.playerPositionCollides("player1", resolved) {
 		t.Fatalf("reconnected player still intersects the monster at %+v", resolved)
@@ -531,6 +530,47 @@ func TestReconnectPushesSavedPlayerBackUntilMonsterCollisionIsGone(t *testing.T)
 		math.Abs(stored.Position.Z-resolved.Z) > 1e-9 {
 		t.Fatalf("persisted player position %+v differs from collision-free spawn %+v",
 			stored.Position, resolved)
+	}
+}
+
+func TestReconnectUsesShortestEjectionAtGateEdge(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	// The player clips the near side of a narrow gate. Facing +X means the old
+	// backwards-only recovery would travel through the gate towards -X.
+	savedPosition := worldmap.Vec3{X: 100.65, Y: 0, Z: 100}
+	savedRotation := PlayerRotation{Y: math.Sqrt(0.5), W: math.Sqrt(0.5)}
+	server.playerStates["player1"] = PlayerState{
+		PlayerID: "player1", Position: savedPosition, Rotation: savedRotation,
+		UpdatedAt: time.Now().UTC(), Online: true,
+	}
+	server.playerSessions["player1"] = nil
+
+	if !server.UpsertMonster(MonsterState{
+		ID: "gate", TemplateID: "test-cube-enemy", Name: "Gate",
+		Position: worldmap.Vec3{X: 100, Y: 0, Z: 100}, Rotation: PlayerRotation{W: 1},
+		Collider: ColliderDefinition{
+			Shape: ColliderBox, Height: 2,
+			Size: worldmap.Vec3{X: 1, Y: 2, Z: 4},
+		},
+		Health: 100, MaxHealth: 100, Alive: true, Action: "idle",
+	}) {
+		t.Fatal("failed to add gate collider")
+	}
+
+	spawn := server.spawnResponseForPlayer("player1")
+	if spawn.Type != "spawn" || spawn.Success == nil || !*spawn.Success {
+		t.Fatalf("reconnect spawn failed: %+v", spawn)
+	}
+	resolved := worldmap.Vec3{X: *spawn.X, Y: *spawn.Y, Z: *spawn.Z}
+	distance := math.Hypot(resolved.X-savedPosition.X, resolved.Z-savedPosition.Z)
+	if resolved.X <= savedPosition.X {
+		t.Fatalf("player was not ejected through the nearest side of the gate: old=%+v new=%+v", savedPosition, resolved)
+	}
+	if math.Abs(distance-0.1) > 0.001 {
+		t.Fatalf("gate recovery displacement = %.6f, want shortest displacement of about 0.1m", distance)
+	}
+	if server.playerPositionCollides("player1", resolved) {
+		t.Fatalf("reconnected player still intersects the gate at %+v", resolved)
 	}
 }
 

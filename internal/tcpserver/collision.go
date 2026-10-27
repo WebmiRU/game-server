@@ -161,20 +161,13 @@ func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap
 	return current
 }
 
-// findNearbyFreePosition recovers an entity that begins inside a collider. It searches
-// concentric rings around the old position and returns the closest sampled free point.
-// Terrain height is recalculated for every candidate so recovery does not float above slopes.
-
-const spawnRecoveryStep = 0.1
-const maxSpawnRecoveryDistance = 50.0
-
-// recoverSpawnOverlap moves a reconnecting player backwards from its persisted facing
-// direction until its cylinder no longer overlaps any active player or live monster.
-// It also reconciles Y to the server heightmap, because player movement is grounded.
+// recoverSpawnOverlap reconciles the saved position with the current terrain and,
+// when it overlaps an entity, moves it by the shortest local displacement to a free point.
+// Player facing is deliberately irrelevant: a reconnect must not push someone through a
+// gate simply because they turned around before disconnecting.
 func (s *Server) recoverSpawnOverlap(
 	playerID string,
 	position worldmap.Vec3,
-	rotation PlayerRotation,
 ) (worldmap.Vec3, bool, bool) {
 	original := position
 	groundPosition := func(candidate worldmap.Vec3) worldmap.Vec3 {
@@ -194,39 +187,8 @@ func (s *Server) recoverSpawnOverlap(
 		return position, changed, false
 	}
 
-	// Project the character's forward vector onto the horizontal plane and search
-	// directly behind it. Identity rotation faces +Z, so "back" is toward -Z.
-	forwardX := 2 * (rotation.X*rotation.Z + rotation.Y*rotation.W)
-	forwardZ := 1 - 2*(rotation.X*rotation.X+rotation.Y*rotation.Y)
-	forwardLength := math.Hypot(forwardX, forwardZ)
-	if forwardLength < 1e-6 || math.IsNaN(forwardLength) || math.IsInf(forwardLength, 0) {
-		forwardX, forwardZ, forwardLength = 0, 1, 1
-	}
-	backX := -forwardX / forwardLength
-	backZ := -forwardZ / forwardLength
-
-	for distance := spawnRecoveryStep; distance <= maxSpawnRecoveryDistance+collisionEpsilon; distance += spawnRecoveryStep {
-		candidate := groundPosition(worldmap.Vec3{
-			X: position.X + backX*distance,
-			Y: position.Y,
-			Z: position.Z + backZ*distance,
-		})
-		if s.world != nil {
-			if _, insideWorld := s.world.HeightAtWorld(candidate.X, candidate.Z); !insideWorld {
-				// The backwards path reached the edge of the map. Try a nearby free
-				// point in another direction rather than placing the player out of bounds.
-				break
-			}
-		}
-
-		if !s.playerPositionCollides(playerID, candidate) {
-			return candidate, true, true
-		}
-	}
-
-	// If the direction behind the player is blocked or leaves the world, fall back
-	// to a bounded radial search. Never silently commit a colliding spawn if a free
-	// location can be found nearby.
+	// Search all directions around the overlap before considering a distant fallback.
+	// The local search chooses the shortest free displacement, not a facing-based path.
 	if candidate, ok := s.findNearbyFreePosition(playerID, position, groundPosition); ok {
 		return candidate, true, true
 	}
@@ -237,68 +199,93 @@ func (s *Server) recoverSpawnOverlap(
 	return position, changed, true
 }
 
+const spawnRecoveryStep = 0.1
+const maxSpawnRecoveryDistance = 50.0
 
-func (s *Server) findFreeSpawnPosition(
-	playerID string,
-	origin worldmap.Vec3,
-	groundPosition func(worldmap.Vec3) worldmap.Vec3,
-) (worldmap.Vec3, bool) {
-	const (
-		directions = 64
-		radiusStep = 0.1
-		maxRadius  = 50.0
-	)
-
-	// This broad search is only used if both direct-backward recovery and the
-	// normal local recovery fail, so the extra checks are not on the regular movement path.
-	for radius := radiusStep; radius <= maxRadius+collisionEpsilon; radius += radiusStep {
-		for direction := 0; direction < directions; direction++ {
-			angle := 2 * math.Pi * float64(direction) / directions
-			candidate := groundPosition(worldmap.Vec3{
-				X: origin.X + math.Cos(angle)*radius,
-				Y: origin.Y,
-				Z: origin.Z + math.Sin(angle)*radius,
-			})
-			if s.world != nil {
-				if _, insideWorld := s.world.HeightAtWorld(candidate.X, candidate.Z); !insideWorld {
-					continue
-				}
-			}
-			if !s.playerPositionCollides(playerID, candidate) {
-				return candidate, true
-			}
-		}
-	}
-	return origin, false
-}
-
+// findNearbyFreePosition searches around an overlapping entity in all horizontal
+// directions. It finds the first radius with free candidates, then binary-refines their
+// distances so the returned point is as close as possible to the original position.
 func (s *Server) findNearbyFreePosition(
 	playerID string,
 	origin worldmap.Vec3,
 	groundPosition func(worldmap.Vec3) worldmap.Vec3,
 ) (worldmap.Vec3, bool) {
-	const (
-		directions = 32
-		radiusStep = 0.1
-		maxRadius  = 6.0
-	)
+	return s.findNearestFreePosition(playerID, origin, groundPosition, 6.0, 0.05, 128)
+}
 
-	for radius := radiusStep; radius <= maxRadius+collisionEpsilon; radius += radiusStep {
+// findFreeSpawnPosition is the broader emergency fallback used when nearby obstacles
+// leave no free point within the local recovery radius.
+func (s *Server) findFreeSpawnPosition(
+	playerID string,
+	origin worldmap.Vec3,
+	groundPosition func(worldmap.Vec3) worldmap.Vec3,
+) (worldmap.Vec3, bool) {
+	return s.findNearestFreePosition(
+		playerID, origin, groundPosition, maxSpawnRecoveryDistance, spawnRecoveryStep, 64)
+}
+
+func (s *Server) findNearestFreePosition(
+	playerID string,
+	origin worldmap.Vec3,
+	groundPosition func(worldmap.Vec3) worldmap.Vec3,
+	maxRadius, radiusStep float64,
+	directions int,
+) (worldmap.Vec3, bool) {
+	if maxRadius <= 0 || radiusStep <= 0 || directions < 1 {
+		return origin, false
+	}
+
+	candidateAt := func(distance, angle float64) (worldmap.Vec3, bool) {
+		candidate := groundPosition(worldmap.Vec3{
+			X: origin.X + math.Cos(angle)*distance,
+			Y: origin.Y,
+			Z: origin.Z + math.Sin(angle)*distance,
+		})
+		if s.world != nil {
+			if _, insideWorld := s.world.HeightAtWorld(candidate.X, candidate.Z); !insideWorld {
+				return candidate, false
+			}
+		}
+		return candidate, !s.playerPositionCollides(playerID, candidate)
+	}
+
+	steps := int(math.Ceil(maxRadius / radiusStep))
+	for ring := 1; ring <= steps; ring++ {
+		radius := math.Min(float64(ring)*radiusStep, maxRadius)
+		previousRadius := math.Max(0, float64(ring-1)*radiusStep)
+		freeAngles := make([]float64, 0, directions)
 		for direction := 0; direction < directions; direction++ {
-			angle := 2 * math.Pi * float64(direction) / directions
-			candidate := groundPosition(worldmap.Vec3{
-				X: origin.X + math.Cos(angle)*radius,
-				Y: origin.Y,
-				Z: origin.Z + math.Sin(angle)*radius,
-			})
-			if s.world != nil {
-				if _, insideWorld := s.world.HeightAtWorld(candidate.X, candidate.Z); !insideWorld {
-					continue
+			angle := 2 * math.Pi * float64(direction) / float64(directions)
+			if _, free := candidateAt(radius, angle); free {
+				freeAngles = append(freeAngles, angle)
+			}
+		}
+		if len(freeAngles) == 0 {
+			continue
+		}
+
+		// Refine each free direction from the previous (blocked) ring and choose
+		// the smallest horizontal displacement among all of the newly free points.
+		bestDistance := math.Inf(1)
+		var bestPosition worldmap.Vec3
+		for _, angle := range freeAngles {
+			low, high := previousRadius, radius
+			for iteration := 0; iteration < 18; iteration++ {
+				middle := (low + high) * 0.5
+				if _, free := candidateAt(middle, angle); free {
+					high = middle
+				} else {
+					low = middle
 				}
 			}
-			if !s.playerPositionCollides(playerID, candidate) {
-				return candidate, true
+			candidate, free := candidateAt(high, angle)
+			if free && high < bestDistance {
+				bestDistance = high
+				bestPosition = candidate
 			}
+		}
+		if !math.IsInf(bestDistance, 1) {
+			return bestPosition, true
 		}
 	}
 	return origin, false
