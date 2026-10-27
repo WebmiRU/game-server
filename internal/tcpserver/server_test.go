@@ -463,11 +463,27 @@ func TestWorldInterestReturnsOnlyNearbyEntitiesAndClampsRange(t *testing.T) {
 
 	conn, scanner, _ := startPipeConnectionWithServer(t, server)
 	authenticateTestPlayer(t, conn, scanner)
+
+	// The server must base visibility on the last accepted player position,
+	// not on a client-supplied query center.
 	sendRequest(t, conn, testRequest{
-		Type: "world_interest",
-		X: float64PointerForTest(0.5),
-		Y: float64PointerForTest(50),
-		Z: float64PointerForTest(0.5),
+		Type:      "player_state",
+		X:         float64PointerForTest(0.5),
+		Y:         float64PointerForTest(50),
+		Z:         float64PointerForTest(0.5),
+		RotationX: float64PointerForTest(0),
+		RotationY: float64PointerForTest(0),
+		RotationZ: float64PointerForTest(0),
+		RotationW: float64PointerForTest(1),
+	})
+	stateResponse := readWireResponse(t, scanner)
+	if stateResponse.Type != "player_state_result" {
+		t.Fatalf("player state response type = %q, want player_state_result", stateResponse.Type)
+	}
+	assertSuccess(t, stateResponse, true)
+
+	sendRequest(t, conn, testRequest{
+		Type:            "world_interest",
 		VisibilityRange: float64PointerForTest(20), // server enforces the minimum of 50
 	})
 
