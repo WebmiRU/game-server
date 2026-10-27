@@ -563,8 +563,8 @@ func TestReconnectMovesSavedPlayerToNearestFreePosition(t *testing.T) {
 
 	resolved := worldmap.Vec3{X: *spawn.X, Y: *spawn.Y, Z: *spawn.Z}
 	distance := math.Hypot(resolved.X-savedPosition.X, resolved.Z-savedPosition.Z)
-	if math.Abs(distance-1.25) > 0.001 {
-		t.Fatalf("recovery displacement = %.6f, want shortest displacement of 1.25m", distance)
+	if math.Abs(distance-1.5) > 0.001 {
+		t.Fatalf("recovery displacement = %.6f, want shortest displacement of 1.5m", distance)
 	}
 	if server.playerPositionCollides("player1", resolved) {
 		t.Fatalf("reconnected player still intersects the monster at %+v", resolved)
@@ -612,8 +612,8 @@ func TestReconnectUsesShortestEjectionAtGateEdge(t *testing.T) {
 	if resolved.X <= savedPosition.X {
 		t.Fatalf("player was not ejected through the nearest side of the gate: old=%+v new=%+v", savedPosition, resolved)
 	}
-	if math.Abs(distance-0.1) > 0.001 {
-		t.Fatalf("gate recovery displacement = %.6f, want shortest displacement of about 0.1m", distance)
+	if math.Abs(distance-0.35) > 0.001 {
+		t.Fatalf("gate recovery displacement = %.6f, want shortest displacement of about 0.35m", distance)
 	}
 	if server.playerPositionCollides("player1", resolved) {
 		t.Fatalf("reconnected player still intersects the gate at %+v", resolved)
@@ -754,8 +754,8 @@ func TestPlayerCanRecoverWhenAlreadyInsideMonsterCollider(t *testing.T) {
 	if server.playerPositionCollides("player1", resolved) {
 		t.Fatalf("recovered position %+v still intersects the sphere", resolved)
 	}
-	if distance := math.Hypot(resolved.X, resolved.Z); distance < 1.249 {
-		t.Fatalf("recovered distance from sphere centre = %.3f, want at least 1.25", distance)
+	if distance := math.Hypot(resolved.X, resolved.Z); distance < 1.499 {
+		t.Fatalf("recovered distance from sphere centre = %.3f, want at least 1.5", distance)
 	}
 }
 
@@ -797,8 +797,8 @@ func TestPlayerMovementStopsAtBoxMonster(t *testing.T) {
 		worldmap.Vec3{X: 0, Y: 0, Z: 0},
 		worldmap.Vec3{X: 2, Y: 0, Z: 0},
 	)
-	if resolved.X > 0.751 || resolved.X < 0.4 {
-		t.Fatalf("resolved X = %.3f; want player stopped near box edge at X <= 0.75 and > 0.4", resolved.X)
+	if resolved.X > 0.501 || resolved.X < 0.1 {
+		t.Fatalf("resolved X = %.3f; want player stopped near box edge at X <= 0.5 and > 0.1", resolved.X)
 	}
 	if math.Abs(resolved.Z) > 1e-9 {
 		t.Fatalf("unexpected lateral movement around a head-on obstacle: Z=%v", resolved.Z)
@@ -819,8 +819,8 @@ func TestPlayerMovementStopsAtOtherPlayer(t *testing.T) {
 		worldmap.Vec3{X: 0, Y: 0, Z: 0},
 		worldmap.Vec3{X: 2, Y: 0, Z: 0},
 	)
-	if resolved.X > 1.501 || resolved.X < 1.2 {
-		t.Fatalf("resolved X = %.3f; want player stopped near other player's cylinder at X <= 1.5", resolved.X)
+	if resolved.X > 1.001 || resolved.X < 0.8 {
+		t.Fatalf("resolved X = %.3f; want player stopped near other player's cylinder at X <= 1.0", resolved.X)
 	}
 }
 
@@ -869,8 +869,8 @@ func TestPlayerStateSendsServerCollisionCorrection(t *testing.T) {
 		t.Fatalf("collision response = %+v, want server_collision_correction", correction)
 	}
 	assertSuccess(t, correction, true)
-	if correction.X == nil || *correction.X > 0.751 {
-		t.Fatalf("corrected X = %v, want X <= 0.75", correction.X)
+	if correction.X == nil || *correction.X > 0.501 {
+		t.Fatalf("corrected X = %v, want X <= 0.5", correction.X)
 	}
 	if got := server.playerStates["player1"].Position.X; math.Abs(got-*correction.X) > 1e-9 {
 		t.Fatalf("stored X = %v, correction X = %v", got, *correction.X)

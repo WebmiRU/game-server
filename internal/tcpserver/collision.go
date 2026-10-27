@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	// PlayerColliderRadius and PlayerColliderHeight define a 0.5 x 2 metre
+	// PlayerColliderRadius and PlayerColliderHeight define a 1 x 2 metre
 	// vertical cylinder. PlayerState.Position is the bottom-centre of this collider.
-	PlayerColliderRadius = 0.25
+	PlayerColliderRadius = 0.5
 	PlayerColliderHeight = 2.0
 
 	// Collision uses small deterministic substeps to avoid tunnelling through thin obstacles.
