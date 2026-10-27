@@ -253,6 +253,7 @@ func (s *Server) simulateMonsterFall(deltaSeconds float64) {
 		return
 	}
 
+	s.pruneExpiredMonsterCorpses(time.Now())
 	s.entitiesMu.Lock()
 	defer s.entitiesMu.Unlock()
 
@@ -323,11 +324,14 @@ func (s *Server) worldSnapshot(requestingPlayerID string, center worldmap.Vec3, 
 		if state.PlayerID == requestingPlayerID || !positionWithinRange(center, state.Position, radius) {
 			continue
 		}
+		state = normalizePlayerHealth(state)
 		nearbyPlayers = append(nearbyPlayers, NearbyPlayer{
-			PlayerID: state.PlayerID,
-			Position: state.Position,
-			Rotation: state.Rotation,
-			Collider: playerColliderDefinition(),
+			PlayerID:  state.PlayerID,
+			Position:  state.Position,
+			Rotation:  state.Rotation,
+			Health:    state.Health,
+			MaxHealth: state.MaxHealth,
+			Collider:  playerColliderDefinition(),
 		})
 	}
 
