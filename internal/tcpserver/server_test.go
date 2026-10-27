@@ -2,6 +2,7 @@ package tcpserver
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"game-server/internal/worldmap"
 )
@@ -183,6 +185,67 @@ func TestAuthenticatedWorldInfoAndHeightQuery(t *testing.T) {
 	want := ((0.0 + 65535.0 + 32768.0 + 16384.0) / 4.0 / 65535.0) * 100.0
 	if diff := *heightResponse.Height - want; diff < -1e-6 || diff > 1e-6 {
 		t.Fatalf("height = %.9f, want %.9f", *heightResponse.Height, want)
+	}
+}
+
+func TestListenAndServeRemainsRunningAfterWorldLoad(t *testing.T) {
+	portReservation, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve local TCP port: %v", err)
+	}
+	address := portReservation.Addr().String()
+	if err := portReservation.Close(); err != nil {
+		t.Fatalf("release local TCP port: %v", err)
+	}
+
+	server := New(Config{
+		Address: address,
+		World:   createTestWorldMap(t),
+		Logger:  log.New(io.Discard, "", 0),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- server.ListenAndServe(ctx)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	connected := false
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("server exited after startup instead of continuing to listen: %v", err)
+		default:
+		}
+
+		conn, err := net.DialTimeout("tcp", address, 50*time.Millisecond)
+		if err == nil {
+			connected = true
+			_ = conn.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !connected {
+		t.Fatal("server did not start listening within 3 seconds after loading the world")
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("server stopped while running: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("server returned an error after cancellation: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop after context cancellation")
 	}
 }
 
