@@ -18,10 +18,10 @@ go run . -addr :7777
 
 The default listen address is `:7777`. Override it with `-addr` or `GAME_SERVER_ADDR`.
 
-The server attempts to load a map from `data/world/starter` by default. If no export is present, it logs a warning and still starts so TCP authentication can be tested. To require a valid map at startup:
+The server attempts to load a map from `data` by default. If no export is present, it logs a warning and still starts so TCP authentication can be tested. To require a valid map at startup:
 
 ```sh
-go run . -addr :7777 -map-dir data/world/starter -require-map
+go run . -addr :7777 -map-dir data -require-map
 ```
 
 The map directory must contain the Unity exporter outputs `manifest.json` and `terrain.u16`. Override the path with `-map-dir` or `GAME_WORLD_DIR`. A corrupt or incompatible map is rejected.
@@ -30,7 +30,7 @@ The map directory must contain the Unity exporter outputs `manifest.json` and `t
 
 1. In the Unity client, open the scene containing the Terrain.
 2. Run **Tools → Game Client → Export World for Go Server**.
-3. Copy the resulting `manifest.json` and `terrain.u16` from `WorldExport/<scene>/<terrain>/` into this repository's `data/world/starter/` directory.
+3. Copy the resulting `manifest.json` and `terrain.u16` from `WorldExport/<scene>/<terrain>/` into this repository's `data/` directory.
 4. Run with `-require-map` so startup fails immediately if the map cannot be loaded.
 
 For example, from the game-server repository root on Windows PowerShell, assuming `game-client` and `game-server` are sibling folders:
