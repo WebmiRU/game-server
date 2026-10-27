@@ -864,6 +864,15 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 		// The previous server-accepted transform is the start of the swept move.
 		// Never resolve from an untrusted client-provided "previous position".
 		acceptedPosition = s.resolvePlayerMovement(playerID, previousState.Position, requestedPosition)
+	} else if s.world != nil {
+		// On the first transform from a brand-new account, use the spawn we sent
+		// during authentication as the starting point. This closes the first-packet
+		// gap where a client could cross an obstacle before the server had a prior state.
+		spawnStart := s.spawnPoint
+		if _, insideWorld := s.world.HeightAtWorld(spawnStart.X, spawnStart.Z); insideWorld {
+			spawnStart.Y += 0.05 // matches the client's CharacterController foot offset
+			acceptedPosition = s.resolvePlayerMovement(playerID, spawnStart, requestedPosition)
+		}
 	}
 
 	state := PlayerState{
