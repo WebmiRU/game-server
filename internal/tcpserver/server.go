@@ -325,6 +325,221 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 	}
 }
 
+func (s *Server) spawnResponseForPlayer(playerID string) response {
+	if state, ok := s.storedPlayerState(playerID); ok {
+		return response{
+			Type:           "spawn",
+			Success:        boolPointer(true),
+			Message:        "restored_saved_state",
+			X:              float64Pointer(state.Position.X),
+			Y:              float64Pointer(state.Position.Y),
+			Z:              float64Pointer(state.Position.Z),
+			RotationX:      float64Pointer(state.Rotation.X),
+			RotationY:      float64Pointer(state.Rotation.Y),
+			RotationZ:      float64Pointer(state.Rotation.Z),
+			RotationW:      float64Pointer(state.Rotation.W),
+			PositionIsRoot: true,
+		}
+	}
+
+	return response{
+		Type:      "spawn",
+		Success:   boolPointer(true),
+		Message:   "default_spawn",
+		X:         float64Pointer(s.spawnPoint.X),
+		Y:         float64Pointer(s.spawnPoint.Y),
+		Z:         float64Pointer(s.spawnPoint.Z),
+		RotationX: float64Pointer(0),
+		RotationY: float64Pointer(0),
+		RotationZ: float64Pointer(0),
+		RotationW: float64Pointer(1),
+	}
+}
+
+func (s *Server) storedPlayerState(playerID string) (PlayerState, bool) {
+	s.playersMu.RLock()
+	state, ok := s.playerStates[playerID]
+	s.playersMu.RUnlock()
+	return state, ok
+}
+
+func (s *Server) logPlayerState(state PlayerState) {
+	now := time.Now()
+	s.stateLogMu.Lock()
+	if !s.lastStateLog.IsZero() && now.Sub(s.lastStateLog) < playerStateLogInterval {
+		s.stateLogMu.Unlock()
+		return
+	}
+	s.lastStateLog = now
+	s.stateLogMu.Unlock()
+
+	s.logger.Printf(
+		"TCP player state received: player=%q position=(%.2f, %.2f, %.2f) rotation=(%.4f, %.4f, %.4f, %.4f)",
+		state.PlayerID,
+		state.Position.X, state.Position.Y, state.Position.Z,
+		state.Rotation.X, state.Rotation.Y, state.Rotation.Z, state.Rotation.W,
+	)
+}
+
+func (s *Server) runStatePersistence(ctx context.Context, finished <-chan struct{}) {
+	if s.stateFile == "" {
+		return
+	}
+	ticker := time.NewTicker(s.stateSaveInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-finished:
+			return
+		case <-ticker.C:
+			if err := s.savePlayerStates(); err != nil {
+				logging.Errorf(s.logger, "save player states to %q: %v", s.stateFile, err)
+			}
+		}
+	}
+}
+
+func (s *Server) loadPlayerStates() error {
+	if s.stateFile == "" {
+		return nil
+	}
+
+	payload, err := os.ReadFile(s.stateFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	var file playerStateFile
+	if err := json.Unmarshal(payload, &file); err != nil {
+		return fmt.Errorf("decode JSON: %w", err)
+	}
+	if file.Version != playerStateFileVersion {
+		return fmt.Errorf("unsupported version %d (supported: %d)", file.Version, playerStateFileVersion)
+	}
+
+	loaded := make(map[string]PlayerState, len(file.Players))
+	for playerID, state := range file.Players {
+		if strings.TrimSpace(playerID) == "" {
+			continue
+		}
+		state.PlayerID = playerID
+		state.Online = false
+		if !s.validStoredState(state) {
+			s.logger.Printf("WARNING: ignoring invalid saved state for player=%q", playerID)
+			continue
+		}
+		loaded[playerID] = state
+	}
+
+	s.playersMu.Lock()
+	s.playerStates = loaded
+	s.stateVersion = 0
+	s.savedVersion = 0
+	s.playersMu.Unlock()
+
+	if len(loaded) > 0 {
+		s.logger.Printf("loaded saved player states: count=%d file=%q", len(loaded), s.stateFile)
+	}
+	return nil
+}
+
+func (s *Server) validStoredState(state PlayerState) bool {
+	position := state.Position
+	rotation := state.Rotation
+	if !finiteNumber(position.X) || !finiteNumber(position.Y) || !finiteNumber(position.Z) ||
+		!finiteNumber(rotation.X) || !finiteNumber(rotation.Y) ||
+		!finiteNumber(rotation.Z) || !finiteNumber(rotation.W) {
+		return false
+	}
+
+	length := math.Hypot(math.Hypot(rotation.X, rotation.Y), math.Hypot(rotation.Z, rotation.W))
+	if !finiteNumber(length) || length < 1e-9 {
+		return false
+	}
+	state.Rotation.X /= length
+	state.Rotation.Y /= length
+	state.Rotation.Z /= length
+	state.Rotation.W /= length
+
+	if s.world != nil {
+		if _, insideWorld := s.world.HeightAtWorld(position.X, position.Z); !insideWorld {
+			return false
+		}
+		world := s.world.Summary()
+		if position.Y < world.Origin.Y-5 || position.Y > world.Origin.Y+world.Size.Y+5 {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) savePlayerStates() error {
+	if s.stateFile == "" {
+		return nil
+	}
+
+	s.stateSaveMu.Lock()
+	defer s.stateSaveMu.Unlock()
+
+	s.playersMu.RLock()
+	if s.stateVersion == s.savedVersion {
+		s.playersMu.RUnlock()
+		return nil
+	}
+	version := s.stateVersion
+	states := make(map[string]PlayerState, len(s.playerStates))
+	for playerID, state := range s.playerStates {
+		state.Online = false
+		states[playerID] = state
+	}
+	s.playersMu.RUnlock()
+
+	payload, err := json.MarshalIndent(playerStateFile{
+		Version: playerStateFileVersion,
+		Players: states,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode JSON: %w", err)
+	}
+
+	directory := filepath.Dir(s.stateFile)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return fmt.Errorf("create state directory: %w", err)
+	}
+	temporaryPath := s.stateFile + ".tmp"
+	file, err := os.OpenFile(temporaryPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open temporary file: %w", err)
+	}
+	if _, err := file.Write(payload); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write temporary file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync temporary file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close temporary file: %w", err)
+	}
+	if err := os.Rename(temporaryPath, s.stateFile); err != nil {
+		return fmt.Errorf("replace state file: %w", err)
+	}
+
+	s.playersMu.Lock()
+	if s.stateVersion == version {
+		s.savedVersion = version
+	}
+	s.playersMu.Unlock()
+	return nil
+}
+
 func (s *Server) closeConnections() {
 	s.connectionsMu.Lock()
 	s.shuttingDown = true
