@@ -233,7 +233,7 @@ type response struct {
 	Players         []NearbyPlayer      `json:"players,omitempty"`
 	Monsters        []MonsterState      `json:"monsters,omitempty"`
 	Items           []GroundItemState   `json:"items,omitempty"`
-	AttackSpeed     float64             `json:"attackSpeed"`
+	AttackSpeed     float64             `json:"attackSpeed,omitempty"`
 }
 
 // ListenAndServe starts the TCP listener and exits when ctx is cancelled or the listener fails.
