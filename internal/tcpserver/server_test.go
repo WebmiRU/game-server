@@ -956,7 +956,7 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 		t.Fatalf("no-target attack response = %+v", noTargetResponse)
 	}
 
-	// Selection is a separate protocol command. Attack itself carries no target ID.
+	// Selection is a separate UI command; the attack order names its own target.
 	sendRequest(t, conn, testRequest{
 		Type: "set_target", TargetType: "monster", TargetID: "target-near",
 	})
@@ -966,9 +966,9 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 		t.Fatalf("selection response = %+v, want target-near", selectionResponse)
 	}
 
-	// Even if a client tries to supply a conflicting ID, the server's target wins.
+	// The attack order explicitly names its target; the server validates the live entity.
 	sendRequest(t, conn, testRequest{
-		Type: "attack", TargetType: "monster", TargetID: "target-far", RequestID: 101,
+		Type: "attack", TargetType: "monster", TargetID: "target-near", RequestID: 101,
 	})
 	attackResponse := readWireResponse(t, scanner)
 	if attackResponse.Type != "attack_result" {
@@ -995,7 +995,9 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 	}
 
 	// A second attack within the server-controlled interval is rejected.
-	sendRequest(t, conn, testRequest{Type: "attack", RequestID: 102})
+	sendRequest(t, conn, testRequest{
+		Type: "attack", TargetType: "monster", TargetID: "target-near", RequestID: 102,
+	})
 	cooldownResponse := readWireResponse(t, scanner)
 	assertSuccess(t, cooldownResponse, false)
 	if cooldownResponse.Type != "attack_result" || cooldownResponse.Message != "attack_cooldown" {
@@ -1005,7 +1007,7 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 		t.Fatalf("retryAfter = %.3f, want positive cooldown", cooldownResponse.RetryAfter)
 	}
 
-	// Switch the server-side target, then ensure the targetless attack command uses it.
+	// Change selection while an attack order is still aimed at target-near.
 	sendRequest(t, conn, testRequest{
 		Type: "set_target", TargetType: "monster", TargetID: "target-far",
 	})
@@ -1015,15 +1017,28 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 		t.Fatalf("far selection response = %+v, want target-far", farSelection)
 	}
 
-	// Range is validated before the cooldown so the client can resume approach immediately.
-	sendRequest(t, conn, testRequest{Type: "attack", RequestID: 103})
+	// The active attack remains aimed at target-near after selection changes to target-far.
+	sendRequest(t, conn, testRequest{
+		Type: "attack", TargetType: "monster", TargetID: "target-near", RequestID: 103,
+	})
+	continuedAttack := readWireResponse(t, scanner)
+	if continuedAttack.Type != "attack_result" || continuedAttack.Target == nil ||
+		continuedAttack.Target.ID != "target-near" ||
+		(continuedAttack.Message != "attack_cooldown" && continuedAttack.Message != "attack_accepted") {
+		t.Fatalf("attack after selection change = %+v, want target-near", continuedAttack)
+	}
+
+	// The server still checks range for the target of the command, regardless of selection.
+	sendRequest(t, conn, testRequest{
+		Type: "attack", TargetType: "monster", TargetID: "target-far", RequestID: 104,
+	})
 	rangeResponse := readWireResponse(t, scanner)
 	assertSuccess(t, rangeResponse, false)
-	if rangeResponse.Message != "attack_out_of_range" || rangeResponse.RequestID != 103 {
+	if rangeResponse.Message != "attack_out_of_range" || rangeResponse.RequestID != 104 {
 		t.Fatalf("out-of-range response = %+v", rangeResponse)
 	}
 	if rangeResponse.Target == nil || rangeResponse.Target.ID != "target-far" {
-		t.Fatalf("out-of-range response target = %+v, want server-selected target-far", rangeResponse.Target)
+		t.Fatalf("out-of-range response target = %+v, want target-far", rangeResponse.Target)
 	}
 }
 
