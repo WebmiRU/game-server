@@ -15,6 +15,10 @@ import (
 	"game-server/internal/worldmap"
 )
 
+// appLogger writes ordinary messages to stdout so GoLand does not mark every
+// log entry as an error. Only logging.Errorf adds the red ANSI color sequence.
+var appLogger = log.New(os.Stdout, "", log.LstdFlags)
+
 func main() {
 	address := flag.String(
 		"addr",
@@ -31,10 +35,10 @@ func main() {
 	var loadedWorld *worldmap.Map
 	loadedWorld, err = worldmap.LoadDir(mapDir)
 	if err != nil {
-		logging.Errorf(log.Default(), "load world map from fixed project data directory %q: %v", mapDir, err)
-		log.Printf("starting without a world map; TCP authentication stays available, world queries are disabled")
+		logging.Errorf(appLogger, "load world map from fixed project data directory %q: %v", mapDir, err)
+		appLogger.Printf("starting without a world map; TCP authentication stays available, world queries are disabled")
 	} else {
-		log.Printf("world map loaded from %q", mapDir)
+		appLogger.Printf("world map loaded from %q", mapDir)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -43,10 +47,10 @@ func main() {
 	server := tcpserver.New(tcpserver.Config{
 		Address: *address,
 		World:   loadedWorld,
-		Logger:  log.Default(),
+		Logger:  appLogger,
 	})
 
-	log.Printf("starting game server (protocol v%d)", tcpserver.ProtocolVersion)
+	appLogger.Printf("starting game server (protocol v%d)", tcpserver.ProtocolVersion)
 	// ListenAndServe blocks here and keeps the process alive until shutdown or a real listener error.
 	if err := server.ListenAndServe(ctx); err != nil {
 		fatalErrorf("game server stopped with error: %v", err)
@@ -54,7 +58,7 @@ func main() {
 }
 
 func fatalErrorf(format string, args ...any) {
-	logging.Errorf(log.Default(), format, args...)
+	logging.Errorf(appLogger, format, args...)
 	os.Exit(1)
 }
 
