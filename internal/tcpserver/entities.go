@@ -17,6 +17,9 @@ const (
 	MaxVisibilityRange     = 500.0
 	monsterGravity         = 9.81
 	monsterPhysicsTick     = 50 * time.Millisecond
+	// Keep dead monsters in world snapshots long enough for clients to play the death animation,
+	// wait five seconds, and fade the corpse out smoothly.
+	MonsterCorpseRetention = 8 * time.Second
 )
 
 const (
@@ -50,17 +53,19 @@ type MonsterState struct {
 	Name       string            `json:"name"`
 	Position   worldmap.Vec3     `json:"position"`
 	Rotation   PlayerRotation    `json:"rotation"`
-	Health     int               `json:"health"`
-	MaxHealth  int               `json:"maxHealth"`
-	Alive      bool              `json:"alive"`
-	Action     string            `json:"action"`
-	AIState    string            `json:"aiState"`
-	Collider   ColliderDefinition `json:"collider"`
+	Health               int               `json:"health"`
+	MaxHealth            int               `json:"maxHealth"`
+	Alive                bool              `json:"alive"`
+	Action               string            `json:"action"`
+	AIState              string            `json:"aiState"`
+	Collider             ColliderDefinition `json:"collider"`
+	DeathElapsedSeconds  float64           `json:"deathElapsedSeconds,omitempty"`
 
-	// Physics bookkeeping stays server-side; clients receive only Position and Action.
+	// Server-only bookkeeping; death elapsed time is computed for each world snapshot.
 	groundY          float64
 	verticalVelocity float64
 	falling          bool
+	deathAt          time.Time
 }
 
 // GroundItemState is a server-owned item lying in the world.
@@ -114,6 +119,7 @@ func (s *Server) seedTestMonsters() {
 			continue
 		}
 
+		maxHealth := defaultMonsterMaxHealth(seed.templateID)
 		monster := MonsterState{
 			ID:         seed.id,
 			TemplateID: seed.templateID,
@@ -121,8 +127,8 @@ func (s *Server) seedTestMonsters() {
 			Position:   worldmap.Vec3{X: seed.x, Y: y + 5, Z: seed.z},
 			// Identity quaternion is explicit: the dog's face points +Z and its tail points -Z.
 			Rotation:          PlayerRotation{X: 0, Y: 0, Z: 0, W: 1},
-			Health:            100,
-			MaxHealth:         100,
+			Health:            maxHealth,
+			MaxHealth:         maxHealth,
 			Alive:             true,
 			Action:            "falling",
 			AIState:           "falling",
@@ -139,6 +145,13 @@ func (s *Server) seedTestMonsters() {
 
 // UpsertMonster adds a monster to the server registry or replaces its current state.
 // It returns false when the entry lacks an ID or an invalid position.
+func defaultMonsterMaxHealth(templateID string) int {
+	if templateID == "test-sphere-enemy" {
+		return 50
+	}
+	return 100
+}
+
 func (s *Server) UpsertMonster(monster MonsterState) bool {
 	monster.ID = strings.TrimSpace(monster.ID)
 	if monster.ID == "" || !s.validEntityPosition(monster.Position) {
@@ -150,8 +163,28 @@ func (s *Server) UpsertMonster(monster MonsterState) bool {
 	if monster.MaxHealth < 0 || monster.Health < 0 {
 		return false
 	}
-	if monster.MaxHealth > 0 && monster.Health > monster.MaxHealth {
+	if monster.MaxHealth == 0 {
+		monster.MaxHealth = defaultMonsterMaxHealth(monster.TemplateID)
+	}
+	if monster.Alive && monster.Health == 0 {
 		monster.Health = monster.MaxHealth
+	}
+	if monster.Health > monster.MaxHealth {
+		monster.Health = monster.MaxHealth
+	}
+	if monster.Health <= 0 {
+		monster.Health = 0
+		monster.Alive = false
+	}
+	if !monster.Alive {
+		monster.Action = "dead"
+		monster.AIState = "dead"
+		monster.falling = false
+		if monster.deathAt.IsZero() {
+			monster.deathAt = time.Now()
+		}
+	} else {
+		monster.deathAt = time.Time{}
 	}
 	if strings.TrimSpace(monster.Action) == "" {
 		monster.Action = "idle"
@@ -281,6 +314,7 @@ func (s *Server) validEntityPosition(position worldmap.Vec3) bool {
 }
 
 func (s *Server) worldSnapshot(requestingPlayerID string, center worldmap.Vec3, radius float64) ([]NearbyPlayer, []MonsterState, []GroundItemState) {
+	s.pruneExpiredMonsterCorpses(time.Now())
 	radius = clampVisibilityRange(radius)
 	nearbyPlayers := make([]NearbyPlayer, 0)
 	for _, state := range s.PlayerStates() {
@@ -297,12 +331,20 @@ func (s *Server) worldSnapshot(requestingPlayerID string, center worldmap.Vec3, 
 
 	nearbyMonsters := make([]MonsterState, 0)
 	nearbyItems := make([]GroundItemState, 0)
+	now := time.Now()
 	s.entitiesMu.RLock()
 	for _, monster := range s.monsters {
-		if monster.Alive && positionWithinRange(center, monster.Position, radius) {
-			monster.Collider = colliderForMonster(monster)
-			nearbyMonsters = append(nearbyMonsters, monster)
+		if !positionWithinRange(center, monster.Position, radius) {
+			continue
 		}
+		if !monster.Alive {
+			if monster.deathAt.IsZero() {
+				continue
+			}
+			monster.DeathElapsedSeconds = math.Max(0, now.Sub(monster.deathAt).Seconds())
+		}
+		monster.Collider = colliderForMonster(monster)
+		nearbyMonsters = append(nearbyMonsters, monster)
 	}
 	for _, item := range s.groundItems {
 		if positionWithinRange(center, item.Position, radius) {
@@ -321,6 +363,21 @@ func (s *Server) worldSnapshot(requestingPlayerID string, center worldmap.Vec3, 
 		return nearbyItems[i].ID < nearbyItems[j].ID
 	})
 	return nearbyPlayers, nearbyMonsters, nearbyItems
+}
+
+func (s *Server) pruneExpiredMonsterCorpses(now time.Time) {
+	var expiredIDs []string
+	s.entitiesMu.Lock()
+	for id, monster := range s.monsters {
+		if !monster.Alive && !monster.deathAt.IsZero() && now.Sub(monster.deathAt) >= MonsterCorpseRetention {
+			delete(s.monsters, id)
+			expiredIDs = append(expiredIDs, id)
+		}
+	}
+	s.entitiesMu.Unlock()
+	for _, id := range expiredIDs {
+		s.clearTargetReferences("monster", id)
+	}
 }
 
 func positionWithinRange(center, position worldmap.Vec3, radius float64) bool {
