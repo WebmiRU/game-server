@@ -533,6 +533,11 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 	// Acknowledge only the first accepted transform. A reply for every tick would
 	// double the steady-state network traffic for thousands of connected players.
 	if !alreadyKnown {
+		s.logger.Printf(
+			"TCP player state registered: player=%q position=(%.2f, %.2f, %.2f) rotation=(%.4f, %.4f, %.4f, %.4f)",
+			playerID, state.Position.X, state.Position.Y, state.Position.Z,
+			state.Rotation.X, state.Rotation.Y, state.Rotation.Z, state.Rotation.W,
+		)
 		return s.writeResponse(conn, response{
 			Type:     "player_state_result",
 			Success:  boolPointer(true),
