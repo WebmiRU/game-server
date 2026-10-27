@@ -20,6 +20,10 @@ import (
 var appLogger = log.New(os.Stdout, "", log.LstdFlags)
 
 func main() {
+	// The standard Go logger defaults to stderr. Redirect it too, so any code
+	// using log.Default()/log.Printf writes normal output to stdout in GoLand.
+	log.SetOutput(os.Stdout)
+
 	address := flag.String(
 		"addr",
 		envOrDefault("GAME_SERVER_ADDR", ":7777"),
