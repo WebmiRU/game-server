@@ -283,10 +283,15 @@ func TestPlayerStateStoresPositionAndFullRotation(t *testing.T) {
 	conn, scanner, _ := startPipeConnectionWithServer(t, server)
 	authenticateTestPlayer(t, conn, scanner)
 
+	initialGroundY, ok := world.HeightAtWorld(0.5, 0.5)
+	if !ok {
+		t.Fatal("initial test position is outside the fixture world")
+	}
+	initialGroundY += 0.05
 	sendRequest(t, conn, testRequest{
 		Type:      "player_state",
 		X:         float64PointerForTest(0.5),
-		Y:         float64PointerForTest(50),
+		Y:         float64PointerForTest(initialGroundY),
 		Z:         float64PointerForTest(0.5),
 		RotationX: float64PointerForTest(0),
 		RotationY: float64PointerForTest(2),
@@ -311,8 +316,8 @@ func TestPlayerStateStoresPositionAndFullRotation(t *testing.T) {
 	if state.PlayerID != "player1" {
 		t.Fatalf("stored playerId = %q, want player1", state.PlayerID)
 	}
-	if state.Position.X != 0.5 || state.Position.Y != 50 || state.Position.Z != 0.5 {
-		t.Fatalf("stored position = %+v, want (0.5, 50, 0.5)", state.Position)
+	if state.Position.X != 0.5 || math.Abs(state.Position.Y-initialGroundY) > 1e-9 || state.Position.Z != 0.5 {
+		t.Fatalf("stored position = %+v, want (0.5, %.9f, 0.5)", state.Position, initialGroundY)
 	}
 	wantComponent := 1 / math.Sqrt(2)
 	if math.Abs(state.Rotation.Y-wantComponent) > 1e-9 ||
@@ -325,10 +330,15 @@ func TestPlayerStateStoresPositionAndFullRotation(t *testing.T) {
 	}
 
 	// Subsequent state updates are accepted without an acknowledgement for each tick.
+	updatedGroundY, ok := world.HeightAtWorld(0.75, 0.25)
+	if !ok {
+		t.Fatal("updated test position is outside the fixture world")
+	}
+	updatedGroundY += 0.05
 	sendRequest(t, conn, testRequest{
 		Type:      "player_state",
 		X:         float64PointerForTest(0.75),
-		Y:         float64PointerForTest(50.25),
+		Y:         float64PointerForTest(updatedGroundY),
 		Z:         float64PointerForTest(0.25),
 		RotationX: float64PointerForTest(0),
 		RotationY: float64PointerForTest(0),
@@ -346,8 +356,8 @@ func TestPlayerStateStoresPositionAndFullRotation(t *testing.T) {
 		t.Fatalf("PlayerStates() has %d entries after update, want 1", len(states))
 	}
 	state = states[0]
-	if state.Position.X != 0.75 || state.Position.Y != 50.25 || state.Position.Z != 0.25 {
-		t.Fatalf("updated position = %+v, want (0.75, 50.25, 0.25)", state.Position)
+	if state.Position.X != 0.75 || math.Abs(state.Position.Y-updatedGroundY) > 1e-9 || state.Position.Z != 0.25 {
+		t.Fatalf("updated position = %+v, want (0.75, %.9f, 0.25)", state.Position, updatedGroundY)
 	}
 	if state.Rotation.X != 0 || state.Rotation.Y != 0 || state.Rotation.Z != 1 || state.Rotation.W != 0 {
 		t.Fatalf("updated rotation = %+v, want (0, 0, 1, 0)", state.Rotation)
