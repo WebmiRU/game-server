@@ -328,7 +328,7 @@ func TestPlayerStateStoresPositionAndFullRotation(t *testing.T) {
 	sendRequest(t, conn, testRequest{
 		Type:      "player_state",
 		X:         float64PointerForTest(0.75),
-		Y:         float64PointerForTest(75),
+		Y:         float64PointerForTest(50.25),
 		Z:         float64PointerForTest(0.25),
 		RotationX: float64PointerForTest(0),
 		RotationY: float64PointerForTest(0),
@@ -346,8 +346,8 @@ func TestPlayerStateStoresPositionAndFullRotation(t *testing.T) {
 		t.Fatalf("PlayerStates() has %d entries after update, want 1", len(states))
 	}
 	state = states[0]
-	if state.Position.X != 0.75 || state.Position.Y != 75 || state.Position.Z != 0.25 {
-		t.Fatalf("updated position = %+v, want (0.75, 75, 0.25)", state.Position)
+	if state.Position.X != 0.75 || state.Position.Y != 50.25 || state.Position.Z != 0.25 {
+		t.Fatalf("updated position = %+v, want (0.75, 50.25, 0.25)", state.Position)
 	}
 	if state.Rotation.X != 0 || state.Rotation.Y != 0 || state.Rotation.Z != 1 || state.Rotation.W != 0 {
 		t.Fatalf("updated rotation = %+v, want (0, 0, 1, 0)", state.Rotation)
