@@ -1567,3 +1567,74 @@ func createTestWorldMap(t *testing.T) *worldmap.Map {
 	}
 	return loaded
 }
+
+
+func TestFallingMonsterMovesAsideInsteadOfPushingPlayer(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	playerConn, peerConn := net.Pipe()
+	defer playerConn.Close()
+	defer peerConn.Close()
+
+	playerPosition := worldmap.Vec3{X: 10, Y: 0.05, Z: 10}
+	player := PlayerState{
+		PlayerID: "player1",
+		Position: playerPosition,
+		Rotation: PlayerRotation{W: 1},
+		Health: 100,
+		MaxHealth: 100,
+		Online: true,
+	}
+	server.playersMu.Lock()
+	server.playerSessions["player1"] = playerConn
+	server.playerStates["player1"] = player
+	server.playersMu.Unlock()
+
+	if !server.UpsertMonster(MonsterState{
+		ID: "falling-monster", TemplateID: "test-cube-enemy", Name: "Falling Monster",
+		Position: worldmap.Vec3{X: playerPosition.X, Y: 2.04, Z: playerPosition.Z},
+		Health: 100, MaxHealth: 100, Alive: true, Action: "falling", AIState: "falling",
+	}) {
+		t.Fatal("failed to add falling monster")
+	}
+
+	server.entitiesMu.Lock()
+	monster := server.monsters["falling-monster"]
+	monster.Position.Y = 2.04
+	monster.groundY = 0
+	monster.verticalVelocity = 0
+	monster.falling = true
+	monster.Action = "falling"
+	monster.AIState = "falling"
+	server.monsters[monster.ID] = monster
+	server.entitiesMu.Unlock()
+
+	if !monsterOverlapsPlayerAt(monster, monster.Position, player) {
+		t.Fatal("test setup must place the falling monster inside the player's vertical and horizontal collider")
+	}
+	if server.playerPositionCollides("player1", playerPosition) {
+		t.Fatal("a falling monster must not be treated as an obstacle that displaces the player")
+	}
+
+	server.simulateMonsterFall(0.05)
+
+	server.playersMu.RLock()
+	acceptedPlayer := server.playerStates["player1"]
+	server.playersMu.RUnlock()
+	if acceptedPlayer.Position != playerPosition {
+		t.Fatalf("player moved from %+v to %+v; the monster must yield instead", playerPosition, acceptedPlayer.Position)
+	}
+
+	server.entitiesMu.RLock()
+	movedMonster := server.monsters["falling-monster"]
+	server.entitiesMu.RUnlock()
+	if math.Abs(movedMonster.Position.X-playerPosition.X) < 0.1 &&
+		math.Abs(movedMonster.Position.Z-playerPosition.Z) < 0.1 {
+		t.Fatalf("falling monster stayed at the player's position: %+v", movedMonster.Position)
+	}
+	if monsterOverlapsPlayerAt(movedMonster, movedMonster.Position, player) {
+		t.Fatalf("falling monster still overlaps the player after collision resolution: %+v", movedMonster.Position)
+	}
+	if !movedMonster.falling {
+		t.Fatal("monster should continue falling after being shifted aside")
+	}
+}
