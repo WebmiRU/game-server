@@ -548,9 +548,10 @@ func TestFirstPlayerMovementIsSweptFromServerSpawn(t *testing.T) {
 		SpawnPoint: &spawn,
 		Logger:    log.New(io.Discard, "", 0),
 	})
+	spawnStart := server.surfaceSpawnPoint()
 	if !server.UpsertMonster(MonsterState{
 		ID: "obstacle", TemplateID: "test-cube-enemy", Name: "Obstacle",
-		Position: worldmap.Vec3{X: 0.5, Y: 50, Z: 0.5},
+		Position: worldmap.Vec3{X: 0.5, Y: spawnStart.Y + 0.05, Z: 0.5},
 		Rotation: PlayerRotation{W: 1},
 		Collider: ColliderDefinition{
 			Shape: ColliderBox, Height: 2,
