@@ -63,11 +63,11 @@ func (s *Server) seedTestMonsters() {
 	// Y is sampled from the server's shared terrain heightmap, rather than guessed,
 	// so the monsters start on the same world surface as the client.
 	seeds := []struct {
-		id, name string
-		x, z     float64
+		id, name, templateID string
+		x, z                 float64
 	}{
-		{id: "monster-pit-001", name: "Пещерный монстр 1", x: 392.0, z: 478.0},
-		{id: "monster-pit-002", name: "Пещерный монстр 2", x: 401.0, z: 482.0},
+		{id: "1", name: "Enemy 1", templateID: "test-cube-enemy", x: 392.0, z: 478.0},
+		{id: "2", name: "Enemy 2", templateID: "test-sphere-enemy", x: 401.0, z: 482.0},
 	}
 
 	for _, seed := range seeds {
@@ -82,7 +82,7 @@ func (s *Server) seedTestMonsters() {
 
 		monster := MonsterState{
 			ID:         seed.id,
-			TemplateID: "test-monster",
+			TemplateID: seed.templateID,
 			Name:       seed.name,
 			Position:   worldmap.Vec3{X: seed.x, Y: y, Z: seed.z},
 			Rotation:   PlayerRotation{W: 1},
