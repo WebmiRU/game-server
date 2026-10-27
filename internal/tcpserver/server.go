@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"game-server/internal/logging"
 	"game-server/internal/worldmap"
 )
 
@@ -139,7 +140,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 				return nil
 			}
 			if networkError, ok := err.(net.Error); ok && networkError.Temporary() {
-				s.logger.Printf("temporary TCP accept error: %v", err)
+				logging.Errorf(s.logger, "temporary TCP accept error: %v", err)
 				select {
 				case <-time.After(100 * time.Millisecond):
 					continue
@@ -225,7 +226,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 						Message: "message_too_large",
 					})
 				} else if !errors.Is(err, io.EOF) && !isClosedNetworkError(err) {
-					s.logger.Printf("TCP read error from %s: %v", conn.RemoteAddr(), err)
+					logging.Errorf(s.logger, "TCP read error from %s: %v", conn.RemoteAddr(), err)
 				}
 			}
 			return
@@ -379,7 +380,7 @@ func (s *Server) writeResponse(conn net.Conn, value response) error {
 	}
 	if err := json.NewEncoder(conn).Encode(value); err != nil {
 		if !isClosedNetworkError(err) {
-			s.logger.Printf("TCP write error to %s: %v", conn.RemoteAddr(), err)
+			logging.Errorf(s.logger, "TCP write error to %s: %v", conn.RemoteAddr(), err)
 		}
 		return err
 	}
