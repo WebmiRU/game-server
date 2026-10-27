@@ -371,10 +371,15 @@ func TestPlayerStatePersistsAndRestoresPositionAndRotation(t *testing.T) {
 	assertSpawnResponse(t, defaultSpawn)
 
 	qx, qy, qz, qw := 0.1, 0.2, 0.3, 0.9
+	savedGroundY, ok := world.HeightAtWorld(0.5, 0.5)
+	if !ok {
+		t.Fatal("test position is outside the fixture world")
+	}
+	savedGroundY += 0.05
 	sendRequest(t, firstConn, testRequest{
 		Type:      "player_state",
 		X:         float64PointerForTest(0.5),
-		Y:         float64PointerForTest(50),
+		Y:         float64PointerForTest(savedGroundY),
 		Z:         float64PointerForTest(0.5),
 		RotationX: float64PointerForTest(qx),
 		RotationY: float64PointerForTest(qy),
@@ -412,9 +417,9 @@ func TestPlayerStatePersistsAndRestoresPositionAndRotation(t *testing.T) {
 		t.Fatal("restored spawn must be interpreted as an exact character root position")
 	}
 	if restoredSpawn.X == nil || restoredSpawn.Y == nil || restoredSpawn.Z == nil ||
-		*restoredSpawn.X != 0.5 || *restoredSpawn.Y != 50 || *restoredSpawn.Z != 0.5 {
-		t.Fatalf("restored position = (%v, %v, %v), want (0.5, 50, 0.5)",
-			restoredSpawn.X, restoredSpawn.Y, restoredSpawn.Z)
+		*restoredSpawn.X != 0.5 || math.Abs(*restoredSpawn.Y-savedGroundY) > 1e-9 || *restoredSpawn.Z != 0.5 {
+		t.Fatalf("restored position = (%v, %v, %v), want (0.5, %.9f, 0.5)",
+			restoredSpawn.X, restoredSpawn.Y, restoredSpawn.Z, savedGroundY)
 	}
 	if restoredSpawn.RotationX == nil || restoredSpawn.RotationY == nil ||
 		restoredSpawn.RotationZ == nil || restoredSpawn.RotationW == nil {
@@ -432,6 +437,38 @@ func TestPlayerStatePersistsAndRestoresPositionAndRotation(t *testing.T) {
 		if math.Abs(gotRotation[i]-wantRotation[i]) > 1e-9 {
 			t.Fatalf("restored rotation component %d = %.12f, want %.12f", i, gotRotation[i], wantRotation[i])
 		}
+	}
+}
+
+func TestSavedPlayerHeightReconcilesAfterTerrainHeightmapChanges(t *testing.T) {
+	world := createTestWorldMap(t)
+	server := New(Config{
+		World:  world,
+		Logger: log.New(io.Discard, "", 0),
+	})
+	saved := PlayerState{
+		PlayerID: "player1",
+		Position: worldmap.Vec3{X: 0.5, Y: 50, Z: 0.5},
+		Rotation: PlayerRotation{W: 1},
+		UpdatedAt: time.Now().UTC(),
+		Online: true,
+	}
+	server.playerStates["player1"] = saved
+	server.playerSessions["player1"] = nil
+
+	terrainY, ok := world.HeightAtWorld(saved.Position.X, saved.Position.Z)
+	if !ok {
+		t.Fatal("saved position is outside the fixture world")
+	}
+	wantY := terrainY + 0.05
+
+	got := server.alignSavedPlayerToCurrentTerrain("player1", saved)
+	if math.Abs(got.Position.Y-wantY) > 1e-9 {
+		t.Fatalf("restored Y = %.9f, want current terrain Y %.9f", got.Position.Y, wantY)
+	}
+	if math.Abs(server.playerStates["player1"].Position.Y-wantY) > 1e-9 {
+		t.Fatalf("stored Y = %.9f, want corrected terrain Y %.9f",
+			server.playerStates["player1"].Position.Y, wantY)
 	}
 }
 
