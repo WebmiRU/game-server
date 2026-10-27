@@ -503,6 +503,48 @@ func TestWorldInterestReturnsOnlyNearbyEntitiesAndClampsRange(t *testing.T) {
 	}
 }
 
+func TestFirstPlayerMovementIsSweptFromServerSpawn(t *testing.T) {
+	world := createTestWorldMap(t)
+	spawn := worldmap.Vec3{X: 0.1, Y: 50, Z: 0.5}
+	server := New(Config{
+		World:     world,
+		SpawnPoint: &spawn,
+		Logger:    log.New(io.Discard, "", 0),
+	})
+	if !server.UpsertMonster(MonsterState{
+		ID: "obstacle", TemplateID: "test-cube-enemy", Name: "Obstacle",
+		Position: worldmap.Vec3{X: 0.5, Y: 50, Z: 0.5},
+		Rotation: PlayerRotation{W: 1},
+		Collider: ColliderDefinition{
+			Shape: ColliderBox, Height: 2,
+			Size: worldmap.Vec3{X: 0.2, Y: 2, Z: 0.2},
+		},
+		Alive: true,
+	}) {
+		t.Fatal("failed to add test obstacle")
+	}
+
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+
+	// Simulate the first transform arriving after the player has already started
+	// moving from spawn. It must still be swept, not accepted as a teleport.
+	sendRequest(t, conn, testRequest{
+		Type: "player_state",
+		X: float64PointerForTest(0.9), Y: float64PointerForTest(50.05), Z: float64PointerForTest(0.5),
+		RotationX: float64PointerForTest(0), RotationY: float64PointerForTest(0),
+		RotationZ: float64PointerForTest(0), RotationW: float64PointerForTest(1),
+	})
+	response := readWireResponse(t, scanner)
+	if response.Type != "player_state_result" || response.Message != "server_collision_correction" {
+		t.Fatalf("first-movement response = %+v, want server_collision_correction", response)
+	}
+	assertSuccess(t, response, true)
+	if response.X == nil || *response.X > 0.151 {
+		t.Fatalf("first accepted X = %v, want player stopped before box at X <= 0.15", response.X)
+	}
+}
+
 func TestPlayerMovementStopsAtBoxMonster(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 	if !server.UpsertMonster(MonsterState{
