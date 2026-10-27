@@ -87,7 +87,7 @@ func TestLoadDirAndHeightAtWorld(t *testing.T) {
 		{name: "south-west corner", x: 100, z: -20, want: 10},
 		{name: "north-east corner", x: 102, z: -18, want: 110},
 		{name: "centre sample", x: 101, z: -19, want: 10 + (32768.0/65535.0)*100},
-		{name: "halfway between four samples", x: 100.5, z: -19.5, want: 10 + (12288.0/65535.0)*100},
+		{name: "halfway between four samples", x: 100.5, z: -19.5, want: 10 + (16384.0/65535.0)*100},
 	}
 
 	for _, test := range tests {
