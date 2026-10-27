@@ -1638,3 +1638,70 @@ func TestFallingMonsterMovesAsideInsteadOfPushingPlayer(t *testing.T) {
 		t.Fatal("monster should continue falling after being shifted aside")
 	}
 }
+
+
+func TestBroadcastMonsterSpawnedToVisibleSubscriber(t *testing.T) {
+	s := New(Config{Logger: log.New(io.Discard, "", 0)})
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	s.playersMu.Lock()
+	s.playerStates["player1"] = PlayerState{
+		PlayerID: "player1",
+		Position: worldmap.Vec3{X: 10, Y: 20, Z: 30},
+		Online:   true,
+	}
+	s.playerSessions["player1"] = serverConn
+	s.worldInterestRanges["player1"] = 100
+	s.playersMu.Unlock()
+
+	spawnPosition := worldmap.Vec3{X: 12, Y: 25, Z: 31}
+	now := time.Now()
+	monster := MonsterState{
+		ID:                 "enemy-respawn-2",
+		TemplateID:         "test-cube-enemy",
+		Name:               "Enemy 1",
+		Position:           spawnPosition,
+		Health:             100,
+		MaxHealth:          100,
+		Alive:              true,
+		Action:             "falling",
+		AIState:            "falling",
+		Collider:           colliderForMonster(MonsterState{TemplateID: "test-cube-enemy"}),
+		groundY:            20,
+		verticalVelocity:   0,
+		falling:            true,
+		spawnStartPosition: spawnPosition,
+		spawnAt:            now,
+	}
+
+	go s.broadcastMonsterSpawned(monster, now)
+
+	scanner := bufio.NewScanner(clientConn)
+	if !scanner.Scan() {
+		t.Fatalf("expected monster_spawned event, scan error: %v", scanner.Err())
+	}
+	var got wireResponse
+	if err := json.Unmarshal(scanner.Bytes(), &got); err != nil {
+		t.Fatalf("decode monster spawn event: %v", err)
+	}
+	if got.Type != "monster_spawned" {
+		t.Fatalf("event type = %q, want monster_spawned", got.Type)
+	}
+	if got.Success == nil || !*got.Success {
+		t.Fatalf("event should be successful: %#v", got)
+	}
+	if got.Monster == nil || got.Monster.ID != monster.ID {
+		t.Fatalf("event monster = %#v, want id %q", got.Monster, monster.ID)
+	}
+	if got.Monster.SpawnStartPosition == nil || *got.Monster.SpawnStartPosition != spawnPosition {
+		t.Fatalf("spawn start position = %#v, want %#v", got.Monster.SpawnStartPosition, spawnPosition)
+	}
+	if got.Monster.GroundY == nil || *got.Monster.GroundY != 20 {
+		t.Fatalf("ground height = %#v, want 20", got.Monster.GroundY)
+	}
+	if got.Monster.VerticalVelocity == nil || *got.Monster.VerticalVelocity != 0 {
+		t.Fatalf("vertical velocity = %#v, want 0", got.Monster.VerticalVelocity)
+	}
+}
