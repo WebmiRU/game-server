@@ -93,6 +93,11 @@ type Server struct {
 	targetsMu    sync.RWMutex
 	playerTargets map[string]TargetReference
 
+	// Effective per-player attack speed is runtime state (attacks per second), so buffs
+	// and debuffs can change it without persisting temporary modifiers to disk.
+	combatStatsMu sync.RWMutex
+	attackSpeeds  map[string]float64
+
 	stateSaveMu sync.Mutex
 	stateLogMu  sync.Mutex
 	lastStateLog time.Time
@@ -148,6 +153,7 @@ func New(config Config) *Server {
 		monsters:          make(map[string]MonsterState),
 		groundItems:       make(map[string]GroundItemState),
 		playerTargets:     make(map[string]TargetReference),
+		attackSpeeds:      make(map[string]float64),
 		connections:       make(map[net.Conn]struct{}),
 	}
 	server.seedTestMonsters()
@@ -227,6 +233,7 @@ type response struct {
 	Players         []NearbyPlayer      `json:"players,omitempty"`
 	Monsters        []MonsterState      `json:"monsters,omitempty"`
 	Items           []GroundItemState   `json:"items,omitempty"`
+	AttackSpeed     float64             `json:"attackSpeed"`
 }
 
 // ListenAndServe starts the TCP listener and exits when ctx is cancelled or the listener fails.
@@ -387,6 +394,10 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 		}
 	}
 	s.targetsMu.Unlock()
+
+	s.combatStatsMu.Lock()
+	delete(s.attackSpeeds, playerID)
+	s.combatStatsMu.Unlock()
 }
 
 func (s *Server) spawnResponseForPlayer(playerID string) response {
@@ -1004,6 +1015,7 @@ func (s *Server) handleWorldInterest(conn net.Conn, playerID string, req request
 		Players:          players,
 		Monsters:         monsters,
 		Items:            items,
+		AttackSpeed:      s.PlayerAttackSpeed(playerID),
 	})
 }
 
