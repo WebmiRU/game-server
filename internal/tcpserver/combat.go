@@ -2,6 +2,7 @@ package tcpserver
 
 import (
 	"math"
+	"net"
 	"strings"
 	"time"
 
@@ -59,7 +60,7 @@ func (s *Server) PlayerAttackSpeed(playerID string) float64 {
 
 // handleAttack validates a single requested melee strike. This stage deliberately does not
 // change health: damage, death, respawn, and counterattacks will be separate mechanics.
-func (s *Server) handleAttack(conn interface{ Write([]byte) (int, error) }, playerID string, req request) error {
+func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error {
 	// Keep the accepted message protocol extensible: a request identifies any future target
 	// with (targetType, targetId), but only live monsters and other players are attackable now.
 	targetType := strings.ToLower(strings.TrimSpace(req.TargetType))
@@ -123,7 +124,7 @@ func (s *Server) handleAttack(conn interface{ Write([]byte) (int, error) }, play
 // writeAttackResult includes the target and current effective attack speed when available,
 // allowing the client to correlate the answer and refresh its cadence after a buff/debuff.
 func (s *Server) writeAttackResult(
-	conn interface{ Write([]byte) (int, error) },
+	conn net.Conn,
 	playerID string,
 	requestID int,
 	success bool,
