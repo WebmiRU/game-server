@@ -30,6 +30,10 @@ const (
 	readTimeout    = 10 * time.Minute
 	writeTimeout   = 10 * time.Second
 	defaultStateSaveInterval = time.Second
+	defaultMovementRetryTimeout = 5 * time.Second
+	movementTargetArrivalDistance = 0.2
+	movementMinProgressDistance = 0.03
+	movementMaxDetourDistance = 0.75
 	playerStateLogInterval = time.Second
 	playerStateFileVersion = 1
 )
@@ -56,6 +60,9 @@ type Config struct {
 	StateFile string
 	// StateSaveInterval controls how often dirty state is flushed to JSON. Defaults to one second.
 	StateSaveInterval time.Duration
+	// MovementRetryTimeout is how long a commanded move may make no useful progress before being cancelled.
+	// Defaults to five seconds.
+	MovementRetryTimeout time.Duration
 }
 
 // Server authenticates TCP clients, tracks online transforms, and answers world queries.
@@ -67,10 +74,12 @@ type Server struct {
 	spawnPoint      worldmap.Vec3
 	stateFile       string
 	stateSaveInterval time.Duration
+	movementRetryTimeout time.Duration
 
 	// movementMu serializes collision resolution and position acceptance across clients.
 	// Without it, two concurrent requests could both pass against stale player positions.
 	movementMu     sync.Mutex
+	movementProgress map[string]movementProgressState
 	playersMu      sync.RWMutex
 	playerStates   map[string]PlayerState
 	playerSessions map[string]net.Conn
@@ -116,6 +125,10 @@ func New(config Config) *Server {
 	if stateSaveInterval <= 0 {
 		stateSaveInterval = defaultStateSaveInterval
 	}
+	movementRetryTimeout := config.MovementRetryTimeout
+	if movementRetryTimeout <= 0 {
+		movementRetryTimeout = defaultMovementRetryTimeout
+	}
 
 	server := &Server{
 		address:           address,
@@ -125,6 +138,8 @@ func New(config Config) *Server {
 		spawnPoint:        spawnPoint,
 		stateFile:         strings.TrimSpace(config.StateFile),
 		stateSaveInterval: stateSaveInterval,
+		movementRetryTimeout: movementRetryTimeout,
+		movementProgress: make(map[string]movementProgressState),
 		playerStates:      make(map[string]PlayerState),
 		playerSessions:    make(map[string]net.Conn),
 		monsters:          make(map[string]MonsterState),
@@ -146,6 +161,9 @@ type request struct {
 	Y               *float64 `json:"y,omitempty"`
 	Z               *float64 `json:"z,omitempty"`
 	VisibilityRange  *float64 `json:"visibilityRange,omitempty"`
+	HasMoveTarget    bool    `json:"hasMoveTarget,omitempty"`
+	MoveTargetX      float64 `json:"moveTargetX,omitempty"`
+	MoveTargetZ      float64 `json:"moveTargetZ,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
 	RotationZ *float64 `json:"rotationZ,omitempty"`
@@ -173,6 +191,13 @@ type PlayerState struct {
 type playerStateFile struct {
 	Version int                    `json:"version"`
 	Players map[string]PlayerState `json:"players"`
+}
+
+type movementProgressState struct {
+	targetX       float64
+	targetZ       float64
+	bestDistance  float64
+	lastProgressAt time.Time
 }
 
 type response struct {
@@ -327,6 +352,8 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 	if playerID == "" {
 		return
 	}
+	s.movementMu.Lock()
+	defer s.movementMu.Unlock()
 	s.playersMu.Lock()
 	defer s.playersMu.Unlock()
 
@@ -335,6 +362,7 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 		return
 	}
 	delete(s.playerSessions, playerID)
+	delete(s.movementProgress, playerID)
 	if state, ok := s.playerStates[playerID]; ok {
 		state.Online = false
 		s.playerStates[playerID] = state
@@ -1010,10 +1038,12 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 	// clients' movement requests. The mutex is released before writing any response.
 	s.movementMu.Lock()
 	acceptedPosition := requestedPosition
+	movementFrom := requestedPosition
 	previousState, alreadyKnown := s.storedPlayerState(playerID)
 	if alreadyKnown {
 		// The previous server-accepted transform is the start of the swept move.
 		// Never resolve from an untrusted client-provided "previous position".
+		movementFrom = previousState.Position
 		acceptedPosition = s.resolvePlayerMovement(playerID, previousState.Position, requestedPosition)
 	} else if s.world != nil {
 		// On the first transform from a brand-new account, use the spawn we sent
@@ -1022,9 +1052,12 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 		spawnStart := s.surfaceSpawnPoint()
 		if _, insideWorld := s.world.HeightAtWorld(spawnStart.X, spawnStart.Z); insideWorld {
 			spawnStart.Y += 0.05 // matches the client's CharacterController foot offset
+			movementFrom = spawnStart
 			acceptedPosition = s.resolvePlayerMovement(playerID, spawnStart, requestedPosition)
 		}
 	}
+
+	retryExhausted := s.updateMovementProgress(playerID, movementFrom, acceptedPosition, req, time.Now())
 
 	state := PlayerState{
 		PlayerID: playerID,
@@ -1051,9 +1084,26 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 		math.Abs(acceptedPosition.Z-requestedPosition.Z) > 0.01
 	verticalPositionCorrected := math.Abs(acceptedPosition.Y-requestedPosition.Y) > 0.01
 
-	// Horizontal corrections mean a player hit an entity and the client must stop
-	// its click-to-move order. Y-only differences are terrain reconciliation: they
-	// must not be treated as a wall, because doing so cancels movement on slopes.
+	if retryExhausted {
+		s.logger.Printf("movement retry timeout: player=%q target=(%.2f, %.2f)", playerID, req.MoveTargetX, req.MoveTargetZ)
+		return s.writeResponse(conn, response{
+			Type:      "player_state_result",
+			Success:   boolPointer(true),
+			Message:   "movement_retry_exhausted",
+			PlayerID:  playerID,
+			X:         float64Pointer(acceptedPosition.X),
+			Y:         float64Pointer(acceptedPosition.Y),
+			Z:         float64Pointer(acceptedPosition.Z),
+			RotationX: float64Pointer(state.Rotation.X),
+			RotationY: float64Pointer(state.Rotation.Y),
+			RotationZ: float64Pointer(state.Rotation.Z),
+			RotationW: float64Pointer(state.Rotation.W),
+		})
+	}
+
+	// Horizontal corrections keep the move command active; the client continues
+	// trying/sliding around the obstacle. Only the retry timeout stops an impossible
+	// or non-progressing move. Y-only differences are ground reconciliation.
 	if horizontalPositionCorrected {
 		return s.writeResponse(conn, response{
 			Type:       "player_state_result",
@@ -1090,6 +1140,62 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 		})
 	}
 	return nil
+}
+
+// updateMovementProgress tracks progress toward a client-requested destination. It is
+// called under movementMu, so the target timer is serialized with collision movement.
+// A small bounded increase in target distance is allowed while sliding around a nearby
+// obstacle; if no useful progress resumes before the configured timeout, the client is told to stop.
+func (s *Server) updateMovementProgress(
+	playerID string,
+	from, accepted worldmap.Vec3,
+	req request,
+	now time.Time,
+) bool {
+	if !req.HasMoveTarget || !finiteNumber(req.MoveTargetX) || !finiteNumber(req.MoveTargetZ) {
+		delete(s.movementProgress, playerID)
+		return false
+	}
+
+	targetDistance := math.Hypot(accepted.X-req.MoveTargetX, accepted.Z-req.MoveTargetZ)
+	if targetDistance <= movementTargetArrivalDistance {
+		delete(s.movementProgress, playerID)
+		return false
+	}
+
+	progress, exists := s.movementProgress[playerID]
+	targetChanged := exists && math.Hypot(
+		progress.targetX-req.MoveTargetX,
+		progress.targetZ-req.MoveTargetZ,
+	) > 0.25
+	if !exists || targetChanged {
+		progress = movementProgressState{
+			targetX: req.MoveTargetX,
+			targetZ: req.MoveTargetZ,
+			bestDistance: math.Hypot(from.X-req.MoveTargetX, from.Z-req.MoveTargetZ),
+			lastProgressAt: now,
+		}
+		s.movementProgress[playerID] = progress
+		return false
+	}
+
+	actualTravel := math.Hypot(accepted.X-from.X, accepted.Z-from.Z)
+	if targetDistance < progress.bestDistance-movementMinProgressDistance {
+		progress.bestDistance = targetDistance
+		progress.lastProgressAt = now
+	} else if actualTravel > movementMinProgressDistance &&
+		targetDistance <= progress.bestDistance+movementMaxDetourDistance {
+		// Allow the player to make sideways progress while the local controller slides
+		// around an enemy. The allowance is bounded so a long wall does not keep a move alive forever.
+		progress.lastProgressAt = now
+	}
+	s.movementProgress[playerID] = progress
+
+	if now.Sub(progress.lastProgressAt) >= s.movementRetryTimeout {
+		delete(s.movementProgress, playerID)
+		return true
+	}
+	return false
 }
 
 func finiteNumber(value float64) bool {

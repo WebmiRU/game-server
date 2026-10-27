@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"game-server/internal/logging"
 	"game-server/internal/tcpserver"
@@ -28,6 +29,10 @@ func main() {
 		"addr",
 		envOrDefault("GAME_SERVER_ADDR", ":7777"),
 		"TCP listen address",
+	)
+	movementRetryTimeout := flag.Duration(
+		"movement-retry-timeout", 5*time.Second,
+		"How long a move can make no useful progress before the server cancels it (e.g. 5s or 10s)",
 	)
 	flag.Parse()
 
@@ -50,6 +55,7 @@ func main() {
 		World:   loadedWorld,
 		Logger:    appLogger,
 		StateFile: filepath.Join(mapDir, "player_states.json"),
+		MovementRetryTimeout: *movementRetryTimeout,
 	})
 
 	appLogger.Printf("starting game server (protocol v%d)", tcpserver.ProtocolVersion)

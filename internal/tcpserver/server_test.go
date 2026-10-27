@@ -49,6 +49,9 @@ type testRequest struct {
 	Y               *float64 `json:"y,omitempty"`
 	Z               *float64 `json:"z,omitempty"`
 	VisibilityRange *float64 `json:"visibilityRange,omitempty"`
+	HasMoveTarget bool `json:"hasMoveTarget,omitempty"`
+	MoveTargetX float64 `json:"moveTargetX,omitempty"`
+	MoveTargetZ float64 `json:"moveTargetZ,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
 	RotationZ *float64 `json:"rotationZ,omitempty"`
@@ -577,7 +580,7 @@ func TestReconnectUsesShortestEjectionAtGateEdge(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 	// The player clips the near side of a narrow gate. Facing +X means the old
 	// backwards-only recovery would travel through the gate towards -X.
-	savedPosition := worldmap.Vec3{X: 100.65, Y: 0, Z: 100}
+	savedPosition := worldmap.Vec3{X: 100.95, Y: 0, Z: 100}
 	savedRotation := PlayerRotation{Y: math.Sqrt(0.5), W: math.Sqrt(0.5)}
 	server.playerStates["player1"] = PlayerState{
 		PlayerID: "player1", Position: savedPosition, Rotation: savedRotation,
@@ -606,8 +609,8 @@ func TestReconnectUsesShortestEjectionAtGateEdge(t *testing.T) {
 	if resolved.X <= savedPosition.X {
 		t.Fatalf("player was not ejected through the nearest side of the gate: old=%+v new=%+v", savedPosition, resolved)
 	}
-	if math.Abs(distance-0.1) > 0.001 {
-		t.Fatalf("gate recovery displacement = %.6f, want shortest displacement of about 0.1m", distance)
+	if math.Abs(distance-0.05) > 0.001 {
+		t.Fatalf("gate recovery displacement = %.6f, want shortest displacement of about 0.05m", distance)
 	}
 	if server.playerPositionCollides("player1", resolved) {
 		t.Fatalf("reconnected player still intersects the gate at %+v", resolved)
@@ -748,8 +751,8 @@ func TestPlayerCanRecoverWhenAlreadyInsideMonsterCollider(t *testing.T) {
 	if server.playerPositionCollides("player1", resolved) {
 		t.Fatalf("recovered position %+v still intersects the sphere", resolved)
 	}
-	if distance := math.Hypot(resolved.X, resolved.Z); distance < 1.2 {
-		t.Fatalf("recovered distance from sphere centre = %.3f, want at least 1.2", distance)
+	if distance := math.Hypot(resolved.X, resolved.Z); distance < 1.25 {
+		t.Fatalf("recovered distance from sphere centre = %.3f, want at least 1.25", distance)
 	}
 }
 
@@ -868,6 +871,55 @@ func TestPlayerStateSendsServerCollisionCorrection(t *testing.T) {
 	}
 	if got := server.playerStates["player1"].Position.X; math.Abs(got-*correction.X) > 1e-9 {
 		t.Fatalf("stored X = %v, correction X = %v", got, *correction.X)
+	}
+}
+
+func TestPlayerMovementRetryStopsAfterConfiguredTimeout(t *testing.T) {
+	server := New(Config{
+		Logger: log.New(io.Discard, "", 0),
+		MovementRetryTimeout: 50 * time.Millisecond,
+	})
+	if !server.UpsertMonster(MonsterState{
+		ID: "wall", TemplateID: "test-cube-enemy", Name: "Wall",
+		Position: worldmap.Vec3{X: 2, Y: 0, Z: 0}, Rotation: PlayerRotation{W: 1}, Alive: true,
+		Collider: ColliderDefinition{Shape: ColliderBox, Size: worldmap.Vec3{X: 2, Y: 2, Z: 4}, Height: 2},
+	}) {
+		t.Fatal("failed to add movement blocker")
+	}
+
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+	requestAt := func(x float64) {
+		t.Helper()
+		sendRequest(t, conn, testRequest{
+			Type: "player_state",
+			X: float64PointerForTest(x), Y: float64PointerForTest(0), Z: float64PointerForTest(0),
+			RotationX: float64PointerForTest(0), RotationY: float64PointerForTest(0),
+			RotationZ: float64PointerForTest(0), RotationW: float64PointerForTest(1),
+			HasMoveTarget: true, MoveTargetX: 10, MoveTargetZ: 0,
+		})
+	}
+
+	requestAt(0)
+	first := readWireResponse(t, scanner)
+	if first.Type != "player_state_result" || first.Message != "state_registered" {
+		t.Fatalf("initial movement response = %+v", first)
+	}
+
+	requestAt(2)
+	collision := readWireResponse(t, scanner)
+	if collision.Type != "player_state_result" || collision.Message != "server_collision_correction" {
+		t.Fatalf("blocked movement response = %+v, want server_collision_correction", collision)
+	}
+
+	time.Sleep(75 * time.Millisecond)
+	requestAt(*collision.X)
+	exhausted := readWireResponse(t, scanner)
+	if exhausted.Type != "player_state_result" || exhausted.Message != "movement_retry_exhausted" {
+		t.Fatalf("stalled movement response = %+v, want movement_retry_exhausted", exhausted)
+	}
+	if exhausted.X == nil || math.Abs(*exhausted.X-*collision.X) > 1e-9 {
+		t.Fatalf("movement stop should return the last accepted position, got %+v after %+v", exhausted, collision)
 	}
 }
 
