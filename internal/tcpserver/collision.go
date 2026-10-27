@@ -87,12 +87,15 @@ func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap
 		requested.Z = from.Z + dz
 		horizontalDistance = maxPlayerMovePerUpdate
 	}
-	if math.Abs(dy) > maxPlayerMovePerUpdate {
+	if s.world == nil && math.Abs(dy) > maxPlayerMovePerUpdate {
 		dy = math.Copysign(maxPlayerMovePerUpdate, dy)
 		requested.Y = from.Y + dy
 	}
 
-	travelDistance := math.Max(horizontalDistance, math.Abs(dy))
+	travelDistance := horizontalDistance
+	if s.world == nil {
+		travelDistance = math.Max(horizontalDistance, math.Abs(dy))
+	}
 	steps := int(math.Ceil(travelDistance / collisionSubstepDistance))
 	if steps < 1 {
 		steps = 1
@@ -102,26 +105,41 @@ func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap
 	stepX := dx / float64(steps)
 	stepY := (requested.Y - from.Y) / float64(steps)
 	stepZ := dz / float64(steps)
+
+	groundPosition := func(position worldmap.Vec3) worldmap.Vec3 {
+		// In the current game prototype players cannot jump or fly. The server's
+		// heightmap therefore owns player Y as well as X/Z; never trust a client's
+		// vertical coordinate to lift it over a monster or another player.
+		if s.world != nil {
+			if terrainY, ok := s.world.HeightAtWorld(position.X, position.Z); ok {
+				position.Y = terrainY + 0.05 // client CharacterController foot offset
+			}
+			return position
+		}
+		return position
+	}
+
 	for step := 0; step < steps; step++ {
 		// Every substep starts at the last accepted location. Do not sample the original
-		// straight line after a block: doing so could jump from one side of a collider
-		// to the other if the final sample happened to be clear.
+		// straight line after a block: doing so could jump to the far side of a collider.
 		next := worldmap.Vec3{
 			X: current.X + stepX,
 			Y: current.Y + stepY,
 			Z: current.Z + stepZ,
 		}
+		next = groundPosition(next)
 		if !s.playerPositionCollides(playerID, next) {
 			current = next
 			continue
 		}
 
-		// Try horizontal axes separately, preserving vertical progress when possible.
+		// Try sliding along each horizontal axis independently.
 		xOnly := worldmap.Vec3{
 			X: current.X + stepX,
 			Y: current.Y + stepY,
 			Z: current.Z,
 		}
+		xOnly = groundPosition(xOnly)
 		if !s.playerPositionCollides(playerID, xOnly) {
 			current = xOnly
 		}
@@ -131,6 +149,7 @@ func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap
 			Y: current.Y + stepY,
 			Z: current.Z + stepZ,
 		}
+		zOnly = groundPosition(zOnly)
 		if !s.playerPositionCollides(playerID, zOnly) {
 			current = zOnly
 		}
