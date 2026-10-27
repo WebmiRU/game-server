@@ -175,6 +175,10 @@ func validateManifest(m Manifest) error {
 	if m.WidthSamples < 2 || m.HeightSamples < 2 {
 		return errors.New("widthSamples and heightSamples must both be at least 2")
 	}
+	// Bound each dimension before multiplying to avoid overflow on hostile metadata.
+	if int64(m.WidthSamples) > maxSamples || int64(m.HeightSamples) > maxSamples {
+		return fmt.Errorf("heightmap dimensions exceed the %d-sample limit", maxSamples)
+	}
 	sampleCount := int64(m.WidthSamples) * int64(m.HeightSamples)
 	if sampleCount <= 0 || sampleCount > maxSamples {
 		return fmt.Errorf("heightmap has too many samples (%d); limit is %d", sampleCount, maxSamples)
