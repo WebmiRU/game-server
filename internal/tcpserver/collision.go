@@ -74,6 +74,7 @@ func colliderForMonster(monster MonsterState) ColliderDefinition {
 func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap.Vec3) worldmap.Vec3 {
 	dx := requested.X - from.X
 	dz := requested.Z - from.Z
+	dy := requested.Y - from.Y
 	horizontalDistance := math.Hypot(dx, dz)
 
 	// Limit an individual update to a generous distance above normal client movement.
@@ -86,8 +87,13 @@ func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap
 		requested.Z = from.Z + dz
 		horizontalDistance = maxPlayerMovePerUpdate
 	}
+	if math.Abs(dy) > maxPlayerMovePerUpdate {
+		dy = math.Copysign(maxPlayerMovePerUpdate, dy)
+		requested.Y = from.Y + dy
+	}
 
-	steps := int(math.Ceil(horizontalDistance / collisionSubstepDistance))
+	travelDistance := math.Max(horizontalDistance, math.Abs(dy))
+	steps := int(math.Ceil(travelDistance / collisionSubstepDistance))
 	if steps < 1 {
 		steps = 1
 	}
