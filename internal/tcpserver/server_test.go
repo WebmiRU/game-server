@@ -30,6 +30,11 @@ type wireResponse struct {
 	X               *float64           `json:"x"`
 	Y               *float64           `json:"y"`
 	Z               *float64           `json:"z"`
+	RotationX       *float64           `json:"rotationX"`
+	RotationY       *float64           `json:"rotationY"`
+	RotationZ       *float64           `json:"rotationZ"`
+	RotationW       *float64           `json:"rotationW"`
+	PositionIsRoot  bool               `json:"positionIsRoot"`
 }
 
 type testRequest struct {
@@ -127,6 +132,18 @@ func assertSpawnResponse(t *testing.T, response wireResponse) {
 	if *response.X != 539.56 || *response.Y != 74.17 || *response.Z != 555.99 {
 		t.Fatalf("spawn coordinates = (%.2f, %.2f, %.2f), want (539.56, 74.17, 555.99)",
 			*response.X, *response.Y, *response.Z)
+	}
+	if response.PositionIsRoot {
+		t.Fatal("default spawn is a Terrain surface position, not a character root position")
+	}
+	if response.RotationX == nil || response.RotationY == nil ||
+		response.RotationZ == nil || response.RotationW == nil {
+		t.Fatalf("spawn rotation missing: %+v", response)
+	}
+	if *response.RotationX != 0 || *response.RotationY != 0 ||
+		*response.RotationZ != 0 || *response.RotationW != 1 {
+		t.Fatalf("default spawn rotation = (%v, %v, %v, %v), want identity quaternion",
+			*response.RotationX, *response.RotationY, *response.RotationZ, *response.RotationW)
 	}
 }
 
@@ -329,6 +346,87 @@ func TestPlayerStateStoresPositionAndFullRotation(t *testing.T) {
 	}
 	if state.Rotation.X != 0 || state.Rotation.Y != 0 || state.Rotation.Z != 1 || state.Rotation.W != 0 {
 		t.Fatalf("updated rotation = %+v, want (0, 0, 1, 0)", state.Rotation)
+	}
+}
+
+func TestPlayerStatePersistsAndRestoresPositionAndRotation(t *testing.T) {
+	world := createTestWorldMap(t)
+	stateFile := filepath.Join(t.TempDir(), "player_states.json")
+	logger := log.New(io.Discard, "", 0)
+	server := New(Config{
+		World:     world,
+		Logger:    logger,
+		StateFile: stateFile,
+	})
+
+	firstConn, firstScanner, _ := startPipeConnectionWithServer(t, server)
+	sendRequest(t, firstConn, testRequest{Type: "auth", Username: "player1", Password: "player1"})
+	assertSuccess(t, readWireResponse(t, firstScanner), true)
+	defaultSpawn := readWireResponse(t, firstScanner)
+	assertSpawnResponse(t, defaultSpawn)
+
+	qx, qy, qz, qw := 0.1, 0.2, 0.3, 0.9
+	sendRequest(t, firstConn, testRequest{
+		Type:      "player_state",
+		X:         float64PointerForTest(0.5),
+		Y:         float64PointerForTest(50),
+		Z:         float64PointerForTest(0.5),
+		RotationX: float64PointerForTest(qx),
+		RotationY: float64PointerForTest(qy),
+		RotationZ: float64PointerForTest(qz),
+		RotationW: float64PointerForTest(qw),
+	})
+	stateAck := readWireResponse(t, firstScanner)
+	if stateAck.Type != "player_state_result" {
+		t.Fatalf("state acknowledgement type = %q, want player_state_result", stateAck.Type)
+	}
+	assertSuccess(t, stateAck, true)
+
+	if err := server.savePlayerStates(); err != nil {
+		t.Fatalf("save player state JSON: %v", err)
+	}
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Fatalf("player state JSON file was not created: %v", err)
+	}
+
+	// Create a fresh server instance to simulate restarting the Go process.
+	restartedServer := New(Config{
+		World:     world,
+		Logger:    logger,
+		StateFile: stateFile,
+	})
+	restoredConn, restoredScanner, _ := startPipeConnectionWithServer(t, restartedServer)
+	sendRequest(t, restoredConn, testRequest{Type: "auth", Username: "player1", Password: "player1"})
+	assertSuccess(t, readWireResponse(t, restoredScanner), true)
+	restoredSpawn := readWireResponse(t, restoredScanner)
+	if restoredSpawn.Type != "spawn" || restoredSpawn.Message != "restored_saved_state" {
+		t.Fatalf("unexpected restored spawn response: %+v", restoredSpawn)
+	}
+	assertSuccess(t, restoredSpawn, true)
+	if !restoredSpawn.PositionIsRoot {
+		t.Fatal("restored spawn must be interpreted as an exact character root position")
+	}
+	if restoredSpawn.X == nil || restoredSpawn.Y == nil || restoredSpawn.Z == nil ||
+		*restoredSpawn.X != 0.5 || *restoredSpawn.Y != 50 || *restoredSpawn.Z != 0.5 {
+		t.Fatalf("restored position = (%v, %v, %v), want (0.5, 50, 0.5)",
+			restoredSpawn.X, restoredSpawn.Y, restoredSpawn.Z)
+	}
+	if restoredSpawn.RotationX == nil || restoredSpawn.RotationY == nil ||
+		restoredSpawn.RotationZ == nil || restoredSpawn.RotationW == nil {
+		t.Fatalf("restored rotation missing: %+v", restoredSpawn)
+	}
+	length := math.Sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+	wantRotation := []float64{qx / length, qy / length, qz / length, qw / length}
+	gotRotation := []float64{
+		*restoredSpawn.RotationX,
+		*restoredSpawn.RotationY,
+		*restoredSpawn.RotationZ,
+		*restoredSpawn.RotationW,
+	}
+	for i := range wantRotation {
+		if math.Abs(gotRotation[i]-wantRotation[i]) > 1e-9 {
+			t.Fatalf("restored rotation component %d = %.12f, want %.12f", i, gotRotation[i], wantRotation[i])
+		}
 	}
 }
 
