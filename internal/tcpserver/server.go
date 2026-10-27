@@ -87,10 +87,11 @@ type Server struct {
 	stateVersion   uint64
 	savedVersion   uint64
 
-	entitiesMu        sync.RWMutex
-	monsters          map[string]MonsterState
-	monsterSpawnPoints map[string]MonsterSpawnPoint
-	groundItems       map[string]GroundItemState
+	entitiesMu             sync.RWMutex
+	monsters               map[string]MonsterState
+	monsterSpawnPoints     map[string]MonsterSpawnPoint
+	monsterSpawnIDByEntity map[string]string
+	groundItems            map[string]GroundItemState
 
 	targetsMu    sync.RWMutex
 	playerTargets map[string]TargetReference
@@ -153,9 +154,10 @@ func New(config Config) *Server {
 		movementProgress: make(map[string]movementProgressState),
 		playerStates:      make(map[string]PlayerState),
 		playerSessions:    make(map[string]net.Conn),
-		monsters:           make(map[string]MonsterState),
-		monsterSpawnPoints: make(map[string]MonsterSpawnPoint),
-		groundItems:        make(map[string]GroundItemState),
+		monsters:               make(map[string]MonsterState),
+		monsterSpawnPoints:     make(map[string]MonsterSpawnPoint),
+		monsterSpawnIDByEntity: make(map[string]string),
+		groundItems:            make(map[string]GroundItemState),
 		playerTargets:     make(map[string]TargetReference),
 		attackSpeeds:      make(map[string]float64),
 		lastAttackAt:      make(map[string]time.Time),
