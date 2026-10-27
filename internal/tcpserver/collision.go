@@ -175,7 +175,7 @@ func (s *Server) recoverSpawnOverlap(
 	playerID string,
 	position worldmap.Vec3,
 	rotation PlayerRotation,
-) (worldmap.Vec3, bool) {
+) (worldmap.Vec3, bool, bool) {
 	original := position
 	groundPosition := func(candidate worldmap.Vec3) worldmap.Vec3 {
 		if s.world != nil {
@@ -191,7 +191,7 @@ func (s *Server) recoverSpawnOverlap(
 		math.Abs(position.Z-original.Z) > 0.001
 
 	if !s.playerPositionCollides(playerID, position) {
-		return position, changed
+		return position, changed, false
 	}
 
 	// Project the character's forward vector onto the horizontal plane and search
@@ -220,7 +220,7 @@ func (s *Server) recoverSpawnOverlap(
 		}
 
 		if !s.playerPositionCollides(playerID, candidate) {
-			return candidate, true
+			return candidate, true, true
 		}
 	}
 
@@ -228,10 +228,48 @@ func (s *Server) recoverSpawnOverlap(
 	// to a bounded radial search. Never silently commit a colliding spawn if a free
 	// location can be found nearby.
 	if candidate, ok := s.findNearbyFreePosition(playerID, position, groundPosition); ok {
-		return candidate, true
+		return candidate, true, true
+	}
+	if candidate, ok := s.findFreeSpawnPosition(playerID, position, groundPosition); ok {
+		return candidate, true, true
 	}
 
-	return position, changed
+	return position, changed, true
+}
+
+
+func (s *Server) findFreeSpawnPosition(
+	playerID string,
+	origin worldmap.Vec3,
+	groundPosition func(worldmap.Vec3) worldmap.Vec3,
+) (worldmap.Vec3, bool) {
+	const (
+		directions = 64
+		radiusStep = 0.1
+		maxRadius  = 50.0
+	)
+
+	// This broad search is only used if both direct-backward recovery and the
+	// normal local recovery fail, so the extra checks are not on the regular movement path.
+	for radius := radiusStep; radius <= maxRadius+collisionEpsilon; radius += radiusStep {
+		for direction := 0; direction < directions; direction++ {
+			angle := 2 * math.Pi * float64(direction) / directions
+			candidate := groundPosition(worldmap.Vec3{
+				X: origin.X + math.Cos(angle)*radius,
+				Y: origin.Y,
+				Z: origin.Z + math.Sin(angle)*radius,
+			})
+			if s.world != nil {
+				if _, insideWorld := s.world.HeightAtWorld(candidate.X, candidate.Z); !insideWorld {
+					continue
+				}
+			}
+			if !s.playerPositionCollides(playerID, candidate) {
+				return candidate, true
+			}
+		}
+	}
+	return origin, false
 }
 
 func (s *Server) findNearbyFreePosition(
