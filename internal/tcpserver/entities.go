@@ -402,6 +402,14 @@ func (s *Server) simulateMonsterFall(deltaSeconds float64) {
 			}
 		}
 
+		wasFalling := monster.falling
+		previousVelocity := monster.verticalVelocity
+		positionShifted := math.Hypot(
+			nextPosition.X-monster.Position.X,
+			nextPosition.Z-monster.Position.Z) > 0.01
+		velocityPausedOrResumed := (math.Abs(previousVelocity) > 0.01 && math.Abs(nextVelocity) <= 0.01) ||
+			(math.Abs(previousVelocity) <= 0.01 && math.Abs(nextVelocity) > 0.01)
+
 		monster.Position = nextPosition
 		monster.verticalVelocity = nextVelocity
 		monster.falling = nextFalling
@@ -413,6 +421,12 @@ func (s *Server) simulateMonsterFall(deltaSeconds float64) {
 			monster.AIState = "idle"
 		}
 		s.monsters[id] = monster
+
+		// Vertical movement is predictable on clients. Send only landing, lateral displacement,
+		// or pause/resume corrections, rather than broadcasting every physics tick.
+		if wasFalling != nextFalling || positionShifted || velocityPausedOrResumed {
+			changedMonsters = append(changedMonsters, monster)
+		}
 	}
 }
 
