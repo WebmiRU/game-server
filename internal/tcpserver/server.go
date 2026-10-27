@@ -255,6 +255,9 @@ type response struct {
 	VisibilityRange *float64           `json:"visibilityRange,omitempty"`
 	Target          *TargetReference    `json:"target,omitempty"`
 	AttackSpeed     float64             `json:"attackSpeed,omitempty"`
+	Damage          int                 `json:"damage,omitempty"`
+	DamageMultiplier float64             `json:"damageMultiplier,omitempty"`
+	AttackSide      string              `json:"attackSide,omitempty"`
 	PlayerHealth    int                 `json:"playerHealth,omitempty"`
 	PlayerMaxHealth int                 `json:"playerMaxHealth,omitempty"`
 	RetryAfter      float64             `json:"retryAfter,omitempty"`
