@@ -20,6 +20,7 @@ func TestAuthenticationLogsUsernameAndOutcomeWithoutPassword(t *testing.T) {
 		})
 		response := readWireResponse(t, scanner)
 		assertSuccess(t, response, true)
+		assertSpawnResponse(t, readWireResponse(t, scanner))
 
 		// Make the handler process the next request too, so its preceding auth log
 		// write has completed before inspecting the in-memory log buffer.
