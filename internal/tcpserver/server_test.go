@@ -751,6 +751,11 @@ func TestApplyMonsterDamageMarksDeathAndRetainsCorpse(t *testing.T) {
 	if !ok || dead.Health != 0 || dead.Alive || dead.Action != "dead" || dead.deathAt.IsZero() {
 		t.Fatalf("death state = %+v, ok=%v", dead, ok)
 	}
+	_, corpses, _ := server.worldSnapshot("player1", worldmap.Vec3{X: 10, Y: 50, Z: 10}, 100)
+	if len(corpses) != 1 || corpses[0].Alive || corpses[0].Health != 0 ||
+		corpses[0].DeathElapsedSeconds < 0 {
+		t.Fatalf("dead monster world snapshot = %+v, want retained corpse with zero HP", corpses)
+	}
 	if _, ok := server.applyMonsterDamage("sphere", MeleeAttackDamage); ok {
 		t.Fatal("damage should not be applied to an already-dead monster")
 	}
