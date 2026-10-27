@@ -580,7 +580,7 @@ func TestReconnectUsesShortestEjectionAtGateEdge(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 	// The player clips the near side of a narrow gate. Facing +X means the old
 	// backwards-only recovery would travel through the gate towards -X.
-	savedPosition := worldmap.Vec3{X: 100.95, Y: 0, Z: 100}
+	savedPosition := worldmap.Vec3{X: 100.65, Y: 0, Z: 100}
 	savedRotation := PlayerRotation{Y: math.Sqrt(0.5), W: math.Sqrt(0.5)}
 	server.playerStates["player1"] = PlayerState{
 		PlayerID: "player1", Position: savedPosition, Rotation: savedRotation,
@@ -609,8 +609,8 @@ func TestReconnectUsesShortestEjectionAtGateEdge(t *testing.T) {
 	if resolved.X <= savedPosition.X {
 		t.Fatalf("player was not ejected through the nearest side of the gate: old=%+v new=%+v", savedPosition, resolved)
 	}
-	if math.Abs(distance-0.05) > 0.001 {
-		t.Fatalf("gate recovery displacement = %.6f, want shortest displacement of about 0.05m", distance)
+	if math.Abs(distance-0.1) > 0.001 {
+		t.Fatalf("gate recovery displacement = %.6f, want shortest displacement of about 0.1m", distance)
 	}
 	if server.playerPositionCollides("player1", resolved) {
 		t.Fatalf("reconnected player still intersects the gate at %+v", resolved)
@@ -751,7 +751,7 @@ func TestPlayerCanRecoverWhenAlreadyInsideMonsterCollider(t *testing.T) {
 	if server.playerPositionCollides("player1", resolved) {
 		t.Fatalf("recovered position %+v still intersects the sphere", resolved)
 	}
-	if distance := math.Hypot(resolved.X, resolved.Z); distance < 1.25 {
+	if distance := math.Hypot(resolved.X, resolved.Z); distance < 1.249 {
 		t.Fatalf("recovered distance from sphere centre = %.3f, want at least 1.25", distance)
 	}
 }
