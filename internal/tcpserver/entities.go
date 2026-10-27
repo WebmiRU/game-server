@@ -355,7 +355,7 @@ func (s *Server) simulateMonsterFall(deltaSeconds float64) {
 	// these positions and are shifted sideways by the server instead of moving players.
 	players := s.PlayerStates()
 	s.entitiesMu.Lock()
-	defer s.entitiesMu.Unlock()
+	changedMonsters := make([]MonsterState, 0)
 
 	for id, monster := range s.monsters {
 		if !monster.Alive || !monster.falling {
