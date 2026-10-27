@@ -219,6 +219,7 @@ func (s *Server) applyMonsterMeleeDamage(
 		monster.verticalVelocity = 0
 		monster.deathAt = time.Now()
 		monster.DeathElapsedSeconds = 0
+		s.scheduleMonsterRespawnLocked(monster)
 	}
 	s.monsters[monsterID] = monster
 	s.entitiesMu.Unlock()
