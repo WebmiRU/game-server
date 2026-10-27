@@ -49,7 +49,7 @@ type Config struct {
 	SpawnPoint *worldmap.Vec3
 }
 
-// Server accepts TCP clients, authenticates them, and exposes read-only world queries.
+// Server authenticates TCP clients, tracks online transforms, and answers world queries.
 type Server struct {
 	address         string
 	world           *worldmap.Map
@@ -486,8 +486,8 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 		})
 	}
 
-	quaternionLength := math.Sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
-	if quaternionLength < 1e-9 {
+	quaternionLength := math.Hypot(math.Hypot(qx, qy), math.Hypot(qz, qw))
+	if !finiteNumber(quaternionLength) || quaternionLength < 1e-9 {
 		return s.writeResponse(conn, response{
 			Type:    "player_state_result",
 			Success: boolPointer(false),
