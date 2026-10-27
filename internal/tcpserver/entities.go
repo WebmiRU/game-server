@@ -323,8 +323,8 @@ func (s *Server) RemoveMonster(id string) bool {
 }
 
 
-// runMonsterSimulation applies simple server-authoritative gravity to test monsters.
-// Keeping the simulation on the server means clients only render the received transform.
+// runMonsterSimulation applies server-authoritative gravity and collision avoidance.
+// Clients predict the same simple fall locally between snapshots and reconcile from this state.
 func (s *Server) runMonsterSimulation(ctx context.Context, finished <-chan struct{}) {
 	ticker := time.NewTicker(monsterPhysicsTick)
 	defer ticker.Stop()
