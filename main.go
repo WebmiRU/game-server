@@ -15,13 +15,13 @@ import (
 	"game-server/internal/worldmap"
 )
 
-// appLogger writes ordinary messages to stdout so GoLand does not mark every
-// log entry as an error. Only logging.Errorf adds the red ANSI color sequence.
+// appLogger writes ordinary messages to stdout. Errors are written to stderr
+// by logging.Errorf, so IDEs and shell pipelines can distinguish the streams.
 var appLogger = log.New(os.Stdout, "", log.LstdFlags)
 
 func main() {
-	// The standard Go logger defaults to stderr. Redirect it too, so any code
-	// using log.Default()/log.Printf writes normal output to stdout in GoLand.
+	// The default Go logger writes to stderr, so explicitly redirect normal log
+	// output to stdout as well.
 	log.SetOutput(os.Stdout)
 
 	address := flag.String(
@@ -36,14 +36,11 @@ func main() {
 		fatalErrorf("resolve fixed world map directory: %v", err)
 	}
 
-	var loadedWorld *worldmap.Map
-	loadedWorld, err = worldmap.LoadDir(mapDir)
+	loadedWorld, err := worldmap.LoadDir(mapDir)
 	if err != nil {
-		logging.Errorf(appLogger, "load world map from fixed project data directory %q: %v", mapDir, err)
-		appLogger.Printf("starting without a world map; TCP authentication stays available, world queries are disabled")
-	} else {
-		appLogger.Printf("world map loaded from %q", mapDir)
+		fatalErrorf("load required world map from %q: %v", mapDir, err)
 	}
+	appLogger.Printf("world map loaded from %q", mapDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -55,7 +52,6 @@ func main() {
 	})
 
 	appLogger.Printf("starting game server (protocol v%d)", tcpserver.ProtocolVersion)
-	// ListenAndServe blocks here and keeps the process alive until shutdown or a real listener error.
 	if err := server.ListenAndServe(ctx); err != nil {
 		fatalErrorf("game server stopped with error: %v", err)
 	}
