@@ -2,32 +2,47 @@ package tcpserver
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"game-server/internal/worldmap"
 )
 
 type wireResponse struct {
-	Type            string `json:"type"`
-	Success         *bool  `json:"success"`
-	Message         string `json:"message"`
-	ProtocolVersion int    `json:"protocolVersion"`
-	PlayerID        string `json:"playerId"`
+	Type            string             `json:"type"`
+	Success         *bool              `json:"success"`
+	Message         string             `json:"message"`
+	ProtocolVersion int                `json:"protocolVersion"`
+	PlayerID        string             `json:"playerId"`
+	World           *worldmap.Summary  `json:"world"`
+	Height          *float64           `json:"height"`
 }
 
 type testRequest struct {
-	Type     string `json:"type"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
+	Type     string   `json:"type"`
+	Username string   `json:"username,omitempty"`
+	Password string   `json:"password,omitempty"`
+	X        *float64 `json:"x,omitempty"`
+	Z        *float64 `json:"z,omitempty"`
 }
 
 func startPipeConnection(t *testing.T) (net.Conn, *bufio.Scanner, chan struct{}) {
 	t.Helper()
-	s := New(Config{
+	return startPipeConnectionWithServer(t, New(Config{
 		Logger: log.New(io.Discard, "", 0),
-	})
+	}))
+}
+
+func startPipeConnectionWithServer(t *testing.T, s *Server) (net.Conn, *bufio.Scanner, chan struct{}) {
+	t.Helper()
 	serverConn, clientConn := net.Pipe()
 	done := make(chan struct{})
 	go func() {
@@ -131,4 +146,93 @@ func TestAuthenticationIsRequiredBeforePing(t *testing.T) {
 		t.Fatalf("unexpected unauthenticated response: %+v", response)
 	}
 	assertSuccess(t, response, false)
+}
+
+func TestAuthenticatedWorldInfoAndHeightQuery(t *testing.T) {
+	world := createTestWorldMap(t)
+	server := New(Config{
+		World:  world,
+		Logger: log.New(io.Discard, "", 0),
+	})
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+
+	sendRequest(t, conn, testRequest{
+		Type:     "auth",
+		Username: "player1",
+		Password: "player1",
+	})
+	assertSuccess(t, readWireResponse(t, scanner), true)
+
+	sendRequest(t, conn, testRequest{Type: "world_info"})
+	worldResponse := readWireResponse(t, scanner)
+	if worldResponse.Type != "world_info" || worldResponse.World == nil {
+		t.Fatalf("unexpected world_info response: %+v", worldResponse)
+	}
+	assertSuccess(t, worldResponse, true)
+	if worldResponse.World.WidthSamples != 2 || worldResponse.World.TerrainName != "TestTerrain" {
+		t.Fatalf("unexpected world summary: %+v", worldResponse.World)
+	}
+
+	x, z := 0.5, 0.5
+	sendRequest(t, conn, testRequest{Type: "height_at", X: &x, Z: &z})
+	heightResponse := readWireResponse(t, scanner)
+	if heightResponse.Type != "height_result" || heightResponse.Height == nil {
+		t.Fatalf("unexpected height_at response: %+v", heightResponse)
+	}
+	assertSuccess(t, heightResponse, true)
+	want := ((0.0 + 65535.0 + 32768.0 + 16384.0) / 4.0 / 65535.0) * 100.0
+	if diff := *heightResponse.Height - want; diff < -1e-6 || diff > 1e-6 {
+		t.Fatalf("height = %.9f, want %.9f", *heightResponse.Height, want)
+	}
+}
+
+func createTestWorldMap(t *testing.T) *worldmap.Map {
+	t.Helper()
+	dir := t.TempDir()
+
+	samples := []uint16{0, 65535, 32768, 16384}
+	payload := make([]byte, len(samples)*2)
+	for i, sample := range samples {
+		binary.LittleEndian.PutUint16(payload[i*2:i*2+2], sample)
+	}
+	sum := sha256.Sum256(payload)
+	manifest := worldmap.Manifest{
+		Format:             worldmap.FormatName,
+		FormatVersion:      worldmap.FormatVersion,
+		SceneName:          "TestScene",
+		TerrainName:        "TestTerrain",
+		Origin:             worldmap.Vec3{X: 0, Y: 0, Z: 0},
+		Size:               worldmap.Vec3{X: 1, Y: 100, Z: 1},
+		WidthSamples:       2,
+		HeightSamples:      2,
+		SampleSpacing:      worldmap.Vec2{X: 1, Z: 1},
+		Encoding:           "uint16",
+		ByteOrder:          "little-endian",
+		RowOrder:           "z-ascending; x-ascending within each row",
+		FirstSample:        "(x=0, z=0)",
+		HeightFormula:      "worldY = origin.y + (sample / 65535.0) * size.y",
+		DataFile:           "terrain.u16",
+		DataLengthBytes:    int64(len(payload)),
+		SHA256:             hex.EncodeToString(sum[:]),
+		MinimumSample:      0,
+		MaximumSample:      65535,
+		MinimumHeightWorld: 0,
+		MaximumHeightWorld: 100,
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), manifestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "terrain.u16"), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := worldmap.LoadDir(dir)
+	if err != nil {
+		t.Fatalf("load test world: %v", err)
+	}
+	return loaded
 }
