@@ -1213,9 +1213,13 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 
 	s.logPlayerState(state)
 
-	horizontalPositionCorrected := math.Abs(acceptedPosition.X-requestedPosition.X) > 0.01 ||
-		math.Abs(acceptedPosition.Z-requestedPosition.Z) > 0.01
-	verticalPositionCorrected := math.Abs(acceptedPosition.Y-requestedPosition.Y) > 0.01
+	// Local Unity physics and the server's collision solver are not bit-identical.
+	// Ignore centimetre-scale differences so tiny discrepancies do not cause camera and shadow jitter.
+	horizontalCorrectionDistance := math.Hypot(
+		acceptedPosition.X-requestedPosition.X,
+		acceptedPosition.Z-requestedPosition.Z)
+	horizontalPositionCorrected := horizontalCorrectionDistance > 0.06
+	verticalPositionCorrected := math.Abs(acceptedPosition.Y-requestedPosition.Y) > 0.08
 
 	if retryExhausted {
 		s.logger.Printf("movement retry timeout: player=%q target=(%.2f, %.2f)", playerID, req.MoveTargetX, req.MoveTargetZ)
