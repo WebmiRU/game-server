@@ -340,6 +340,7 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 
 func (s *Server) spawnResponseForPlayer(playerID string) response {
 	if state, ok := s.storedPlayerState(playerID); ok {
+		state = s.alignSavedPlayerToCurrentTerrain(playerID, state)
 		return response{
 			Type:           "spawn",
 			Success:        boolPointer(true),
@@ -355,18 +356,68 @@ func (s *Server) spawnResponseForPlayer(playerID string) response {
 		}
 	}
 
+	spawn := s.surfaceSpawnPoint()
 	return response{
 		Type:      "spawn",
 		Success:   boolPointer(true),
 		Message:   "default_spawn",
-		X:         float64Pointer(s.spawnPoint.X),
-		Y:         float64Pointer(s.spawnPoint.Y),
-		Z:         float64Pointer(s.spawnPoint.Z),
+		X:         float64Pointer(spawn.X),
+		Y:         float64Pointer(spawn.Y),
+		Z:         float64Pointer(spawn.Z),
 		RotationX: float64Pointer(0),
 		RotationY: float64Pointer(0),
 		RotationZ: float64Pointer(0),
 		RotationW: float64Pointer(1),
 	}
+}
+
+// surfaceSpawnPoint derives the initial spawn height from the currently loaded heightmap.
+// The hard-coded Y is used only when no compatible world map is available.
+func (s *Server) surfaceSpawnPoint() worldmap.Vec3 {
+	spawn := s.spawnPoint
+	if s.world != nil {
+		if terrainY, ok := s.world.HeightAtWorld(spawn.X, spawn.Z); ok {
+			spawn.Y = terrainY
+		}
+	}
+	return spawn
+}
+
+// alignSavedPlayerToCurrentTerrain migrates old saved ground positions after a heightmap
+// update. This prototype has no jump/airborne player movement, so a large vertical mismatch
+// at the saved X/Z is treated as stale terrain height and snapped to the current surface.
+func (s *Server) alignSavedPlayerToCurrentTerrain(playerID string, state PlayerState) PlayerState {
+	if s.world == nil {
+		return state
+	}
+	terrainY, ok := s.world.HeightAtWorld(state.Position.X, state.Position.Z)
+	if !ok {
+		return state
+	}
+
+	expectedY := terrainY + 0.05
+	if math.Abs(state.Position.Y-expectedY) <= 0.5 {
+		return state
+	}
+
+	s.playersMu.Lock()
+	current, exists := s.playerStates[playerID]
+	if exists && current.UpdatedAt.Equal(state.UpdatedAt) {
+		oldY := current.Position.Y
+		current.Position.Y = expectedY
+		current.UpdatedAt = time.Now().UTC()
+		s.playerStates[playerID] = current
+		s.stateVersion++
+		state = current
+		s.playersMu.Unlock()
+
+		s.logger.Printf(
+			"saved player height reconciled to current terrain: player=%q oldY=%.3f newY=%.3f",
+			playerID, oldY, expectedY)
+		return state
+	}
+	s.playersMu.Unlock()
+	return state
 }
 
 func (s *Server) storedPlayerState(playerID string) (PlayerState, bool) {
@@ -868,7 +919,7 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 		// On the first transform from a brand-new account, use the spawn we sent
 		// during authentication as the starting point. This closes the first-packet
 		// gap where a client could cross an obstacle before the server had a prior state.
-		spawnStart := s.spawnPoint
+		spawnStart := s.surfaceSpawnPoint()
 		if _, insideWorld := s.world.HeightAtWorld(spawnStart.X, spawnStart.Z); insideWorld {
 			spawnStart.Y += 0.05 // matches the client's CharacterController foot offset
 			acceptedPosition = s.resolvePlayerMovement(playerID, spawnStart, requestedPosition)
