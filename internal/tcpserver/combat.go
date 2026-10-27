@@ -20,6 +20,9 @@ const (
 	// Players should not need to physically push into one another to attack.
 	MeleeAttackRangeAllowance = 0.4
 	MeleeAttackDamage         = 10
+	MeleeSideDamageMultiplier = 1.5
+	MeleeRearDamageMultiplier = 2.0
+	meleeFrontRearDotThreshold = 0.7071067811865476 // cos(45 degrees)
 	attackCooldownRetryFloor  = 0.05
 	outOfRangeRetryDelay      = 0.15
 )
@@ -61,7 +64,7 @@ func (s *Server) PlayerAttackSpeed(playerID string) float64 {
 
 // handleAttack validates one strike against the target already selected on the server.
 // The client does not send a target ID here: set_target owns selection, and this command
-// always acts on the server's current target. Damage is intentionally out of scope for now.
+// always acts on the server's current target. Damage and hit direction are server-authoritative.
 func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error {
 	target := s.currentPlayerTarget(playerID)
 	if target == nil {
@@ -104,28 +107,126 @@ func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error
 	}
 
 	var damagedMonster *MonsterState
+	damage := 0
+	attackSide := ""
+	damageMultiplier := 1.0
 	if target.Type == "monster" {
-		monster, ok := s.applyMonsterDamage(target.ID, MeleeAttackDamage)
+		monster, appliedDamage, side, multiplier, ok :=
+			s.applyMonsterMeleeDamage(target.ID, attacker.Position)
 		if !ok {
 			return s.writeAttackResult(conn, playerID, req.RequestID, false,
 				"target_not_found", nil, 0)
 		}
 		damagedMonster = &monster
+		damage = appliedDamage
+		attackSide = side
+		damageMultiplier = multiplier
 	}
 
 	s.logger.Printf(
-		"melee attack accepted: player=%q targetType=%q targetID=%q damage=%d distance=%.3f range=%.3f attacksPerSecond=%.3f",
-		playerID, target.Type, target.ID, MeleeAttackDamage, distance, maxDistance, speed)
+		"melee attack accepted: player=%q targetType=%q targetID=%q damage=%d direction=%q multiplier=%.1f distance=%.3f range=%.3f attacksPerSecond=%.3f",
+		playerID, target.Type, target.ID, damage, attackSide, damageMultiplier, distance, maxDistance, speed)
 	return s.writeResponse(conn, response{
-		Type:        "attack_result",
-		Success:     boolPointer(true),
-		Message:     "attack_accepted",
-		PlayerID:    playerID,
-		Target:      target,
-		Monster:     damagedMonster,
-		RequestID:   req.RequestID,
-		AttackSpeed: speed,
+		Type:             "attack_result",
+		Success:          boolPointer(true),
+		Message:          "attack_accepted",
+		PlayerID:         playerID,
+		Target:           target,
+		Monster:          damagedMonster,
+		RequestID:        req.RequestID,
+		AttackSpeed:      speed,
+		Damage:           damage,
+		DamageMultiplier: damageMultiplier,
+		AttackSide:       attackSide,
 	})
+}
+
+// calculateMeleeDamage classifies the horizontal direction of an attacker relative to a
+// target's server-owned facing. The front and rear arcs are 90 degrees wide; the remaining
+// two side arcs cover 90 degrees each. A zero/invalid target rotation defaults to +Z facing.
+func calculateMeleeDamage(
+	attackerPosition, targetPosition worldmap.Vec3,
+	targetRotation PlayerRotation,
+) (int, string, float64) {
+	dx := attackerPosition.X - targetPosition.X
+	dz := attackerPosition.Z - targetPosition.Z
+	distance := math.Hypot(dx, dz)
+	if distance <= 1e-6 {
+		return MeleeAttackDamage, "front", 1.0
+	}
+
+	qx, qy, qz, qw := targetRotation.X, targetRotation.Y, targetRotation.Z, targetRotation.W
+	rotationLength := math.Sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+	if !finiteNumber(rotationLength) || rotationLength < 1e-9 {
+		qx, qy, qz, qw = 0, 0, 0, 1
+	} else {
+		qx /= rotationLength
+		qy /= rotationLength
+		qz /= rotationLength
+		qw /= rotationLength
+	}
+
+	// Equivalent to rotating Unity's local Vector3.forward by the target quaternion,
+	// then projecting that direction onto the horizontal XZ plane.
+	forwardX := 2 * (qx*qz + qw*qy)
+	forwardZ := 1 - 2*(qx*qx+qy*qy)
+	forwardLength := math.Hypot(forwardX, forwardZ)
+	if forwardLength <= 1e-6 || !finiteNumber(forwardLength) {
+		forwardX, forwardZ = 0, 1
+	} else {
+		forwardX /= forwardLength
+		forwardZ /= forwardLength
+	}
+
+	dot := (dx*forwardX + dz*forwardZ) / distance
+	dot = math.Max(-1, math.Min(1, dot))
+
+	direction := "side"
+	multiplier := MeleeSideDamageMultiplier
+	if dot >= meleeFrontRearDotThreshold {
+		direction = "front"
+		multiplier = 1.0
+	} else if dot <= -meleeFrontRearDotThreshold {
+		direction = "back"
+		multiplier = MeleeRearDamageMultiplier
+	}
+
+	return int(math.Round(float64(MeleeAttackDamage) * multiplier)), direction, multiplier
+}
+
+// applyMonsterMeleeDamage calculates the attack angle and applies its damage atomically,
+// using the monster's current server-owned position and orientation.
+func (s *Server) applyMonsterMeleeDamage(
+	monsterID string,
+	attackerPosition worldmap.Vec3,
+) (MonsterState, int, string, float64, bool) {
+	s.entitiesMu.Lock()
+	monster, exists := s.monsters[monsterID]
+	if !exists || !monster.Alive {
+		s.entitiesMu.Unlock()
+		return MonsterState{}, 0, "", 1.0, false
+	}
+
+	damage, direction, multiplier := calculateMeleeDamage(
+		attackerPosition, monster.Position, monster.Rotation)
+	monster.Health -= damage
+	if monster.Health <= 0 {
+		monster.Health = 0
+		monster.Alive = false
+		monster.Action = "dead"
+		monster.AIState = "dead"
+		monster.falling = false
+		monster.verticalVelocity = 0
+		monster.deathAt = time.Now()
+		monster.DeathElapsedSeconds = 0
+	}
+	s.monsters[monsterID] = monster
+	s.entitiesMu.Unlock()
+
+	if !monster.Alive {
+		s.clearTargetReferences("monster", monsterID)
+	}
+	return monster, damage, direction, multiplier, true
 }
 
 // applyMonsterDamage applies a flat server-authoritative hit and starts the corpse timer once
