@@ -6,15 +6,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"game-server/internal/tcpserver"
 	"game-server/internal/worldmap"
 )
-
-// worldMapDirectory is the single fixed location of the Unity terrain export.
-// The game-client and game-server repositories are expected to be sibling directories.
-const worldMapDirectory = "../game-client/WorldExport/SampleScene/Terrain"
 
 func main() {
 	address := flag.String(
@@ -24,11 +22,16 @@ func main() {
 	)
 	flag.Parse()
 
-	loadedWorld, err := worldmap.LoadDir(worldMapDirectory)
+	mapDir, err := fixedWorldMapDirectory()
 	if err != nil {
-		log.Fatalf("load world map from %q: %v", worldMapDirectory, err)
+		log.Fatal(err)
 	}
-	log.Printf("world map loaded from %q", worldMapDirectory)
+
+	loadedWorld, err := worldmap.LoadDir(mapDir)
+	if err != nil {
+		log.Fatalf("load world map from fixed project data directory %q: %v", mapDir, err)
+	}
+	log.Printf("world map loaded from %q", mapDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -43,6 +46,26 @@ func main() {
 	if err := server.ListenAndServe(ctx); err != nil {
 		log.Fatalf("game server stopped with error: %v", err)
 	}
+}
+
+// fixedWorldMapDirectory always resolves to data/ beside this project's main.go.
+// It deliberately does not depend on GoLand's Working directory or executable location.
+func fixedWorldMapDirectory() (string, error) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", os.ErrNotExist
+	}
+
+	projectDir := filepath.Dir(sourceFile)
+	if !filepath.IsAbs(projectDir) {
+		absoluteDir, err := filepath.Abs(projectDir)
+		if err != nil {
+			return "", err
+		}
+		projectDir = absoluteDir
+	}
+
+	return filepath.Join(projectDir, "data"), nil
 }
 
 func envOrDefault(name, fallback string) string {
