@@ -38,8 +38,11 @@ type wireResponse struct {
 	RotationW       *float64           `json:"rotationW"`
 	PositionIsRoot  bool               `json:"positionIsRoot"`
 	VisibilityRange *float64           `json:"visibilityRange"`
-	AttackSpeed     float64             `json:"attackSpeed"`
-	Target          *TargetReference    `json:"target"`
+	AttackSpeed      float64             `json:"attackSpeed"`
+	Damage           int                 `json:"damage"`
+	DamageMultiplier  float64             `json:"damageMultiplier"`
+	AttackSide        string              `json:"attackSide"`
+	Target            *TargetReference    `json:"target"`
 	Players         []NearbyPlayer      `json:"players"`
 	Monsters        []MonsterState      `json:"monsters"`
 	Monster         *MonsterState       `json:"monster"`
@@ -775,6 +778,55 @@ func TestApplyMonsterDamageMarksDeathAndRetainsCorpse(t *testing.T) {
 	}
 }
 
+func TestMeleeDamageUsesAttackerPositionRelativeToTargetFacing(t *testing.T) {
+	identity := PlayerRotation{W: 1}
+	tests := []struct {
+		name       string
+		attacker   worldmap.Vec3
+		rotation   PlayerRotation
+		wantDamage int
+		wantSide   string
+		wantMulti  float64
+	}{
+		{
+			name: "front",
+			attacker: worldmap.Vec3{X: 0, Z: 2},
+			rotation: identity,
+			wantDamage: 10, wantSide: "front", wantMulti: 1.0,
+		},
+		{
+			name: "side",
+			attacker: worldmap.Vec3{X: 2, Z: 0},
+			rotation: identity,
+			wantDamage: 15, wantSide: "side", wantMulti: 1.5,
+		},
+		{
+			name: "back",
+			attacker: worldmap.Vec3{X: 0, Z: -2},
+			rotation: identity,
+			wantDamage: 20, wantSide: "back", wantMulti: 2.0,
+		},
+		{
+			name: "front follows target rotation",
+			attacker: worldmap.Vec3{X: 2, Z: 0},
+			rotation: PlayerRotation{Y: math.Sqrt(0.5), W: math.Sqrt(0.5)},
+			wantDamage: 10, wantSide: "front", wantMulti: 1.0,
+		},
+	}
+
+	targetPosition := worldmap.Vec3{}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			damage, side, multiplier := calculateMeleeDamage(test.attacker, targetPosition, test.rotation)
+			if damage != test.wantDamage || side != test.wantSide ||
+				math.Abs(multiplier-test.wantMulti) > 0.0001 {
+				t.Fatalf("damage result = %d/%s/%.2f, want %d/%s/%.2f",
+					damage, side, multiplier, test.wantDamage, test.wantSide, test.wantMulti)
+			}
+		})
+	}
+}
+
 func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 	if !server.UpsertMonster(MonsterState{
@@ -846,9 +898,14 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 	if math.Abs(attackResponse.AttackSpeed-2.0) > 0.0001 {
 		t.Fatalf("attack speed = %.3f, want 2.0", attackResponse.AttackSpeed)
 	}
-	if attackResponse.Monster == nil || attackResponse.Monster.Health != 90 ||
+	if attackResponse.Monster == nil || attackResponse.Monster.Health != 85 ||
 		attackResponse.Monster.MaxHealth != 100 || !attackResponse.Monster.Alive {
-		t.Fatalf("attack monster state = %+v, want 90/100 HP and alive", attackResponse.Monster)
+		t.Fatalf("side attack monster state = %+v, want 85/100 HP and alive", attackResponse.Monster)
+	}
+	if attackResponse.Damage != 15 || attackResponse.AttackSide != "side" ||
+		math.Abs(attackResponse.DamageMultiplier-1.5) > 0.0001 {
+		t.Fatalf("side attack metadata = damage:%d side:%q multiplier:%.2f, want 15/side/1.5",
+			attackResponse.Damage, attackResponse.AttackSide, attackResponse.DamageMultiplier)
 	}
 
 	// A second attack within the server-controlled interval is rejected.
