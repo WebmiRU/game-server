@@ -2,12 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
-	"io/fs"
 	"log"
 	"os"
-	"path/filepath"
 	"os/signal"
 	"syscall"
 
@@ -15,39 +12,23 @@ import (
 	"game-server/internal/worldmap"
 )
 
+// worldMapDirectory is the single fixed location of the Unity terrain export.
+// The game-client and game-server repositories are expected to be sibling directories.
+const worldMapDirectory = "../game-client/WorldExport/SampleScene/Terrain"
+
 func main() {
 	address := flag.String(
 		"addr",
 		envOrDefault("GAME_SERVER_ADDR", ":7777"),
 		"TCP listen address",
 	)
-	mapDir := flag.String(
-		"map-dir",
-		envOrDefault("GAME_WORLD_DIR", "data"),
-		"directory containing GWM manifest.json and terrain.u16",
-	)
-	requireMap := flag.Bool(
-		"require-map",
-		false,
-		"exit when the configured world map cannot be loaded",
-	)
 	flag.Parse()
 
-	var loadedWorld *worldmap.Map
-	loadedWorld, err := worldmap.LoadDir(*mapDir)
+	loadedWorld, err := worldmap.LoadDir(worldMapDirectory)
 	if err != nil {
-		_, manifestStatErr := os.Stat(filepath.Join(*mapDir, "manifest.json"))
-		mapIsNotConfigured := errors.Is(manifestStatErr, fs.ErrNotExist)
-		if mapIsNotConfigured && !*requireMap {
-			log.Printf(
-				"WARNING: no world export found in %q: %v; TCP authentication will still be available",
-				*mapDir,
-				err,
-			)
-		} else {
-			log.Fatalf("load world map from %q: %v", *mapDir, err)
-		}
+		log.Fatalf("load world map from %q: %v", worldMapDirectory, err)
 	}
+	log.Printf("world map loaded from %q", worldMapDirectory)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
