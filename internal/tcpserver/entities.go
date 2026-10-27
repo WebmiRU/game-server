@@ -1,9 +1,11 @@
 package tcpserver
 
 import (
+	"context"
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"game-server/internal/worldmap"
 )
@@ -13,6 +15,8 @@ const (
 	MinVisibilityRange     = 50.0
 	DefaultVisibilityRange = 100.0
 	MaxVisibilityRange     = 500.0
+	monsterGravity         = 9.81
+	monsterPhysicsTick     = 50 * time.Millisecond
 )
 
 // NearbyPlayer is the compact representation sent to clients for another active player.
@@ -36,6 +40,11 @@ type MonsterState struct {
 	Alive      bool              `json:"alive"`
 	Action     string            `json:"action"`
 	AIState    string            `json:"aiState"`
+
+	// Physics bookkeeping stays server-side; clients receive only Position and Action.
+	groundY          float64
+	verticalVelocity float64
+	falling          bool
 }
 
 // GroundItemState is a server-owned item lying in the world.
@@ -61,8 +70,8 @@ func (s *Server) seedTestMonsters() {
 	}
 
 	// These coordinates are around the pit called out in the Unity click-to-move log.
-	// Y is sampled from the server's shared terrain heightmap, rather than guessed,
-	// so the monsters start on the same world surface as the client.
+	// The authoritative ground height is sampled from the server's world map. Test
+	// monsters spawn five units above that surface and then fall under server gravity.
 	seeds := []struct {
 		id, name, templateID string
 		x, z                 float64
@@ -85,13 +94,18 @@ func (s *Server) seedTestMonsters() {
 			ID:         seed.id,
 			TemplateID: seed.templateID,
 			Name:       seed.name,
-			Position:   worldmap.Vec3{X: seed.x, Y: y, Z: seed.z},
-			Rotation:   PlayerRotation{W: 1},
-			Health:     100,
-			MaxHealth:  100,
-			Alive:      true,
-			Action:     "idle",
-			AIState:    "idle",
+			Position:   worldmap.Vec3{X: seed.x, Y: y + 5, Z: seed.z},
+			// Identity quaternion is explicit: the smiley face's local +Z direction
+			// is its fixed forward direction until a different rotation is configured.
+			Rotation:          PlayerRotation{X: 0, Y: 0, Z: 0, W: 1},
+			Health:            100,
+			MaxHealth:         100,
+			Alive:             true,
+			Action:            "falling",
+			AIState:           "falling",
+			groundY:           y,
+			verticalVelocity:  0,
+			falling:           true,
 		}
 		s.monsters[monster.ID] = monster
 	}
@@ -122,6 +136,15 @@ func (s *Server) UpsertMonster(monster MonsterState) bool {
 		monster.AIState = "idle"
 	}
 
+	monster.groundY = monster.Position.Y
+	if s.world != nil {
+		if terrainHeight, ok := s.world.HeightAtWorld(monster.Position.X, monster.Position.Z); ok {
+			monster.groundY = terrainHeight
+		}
+	}
+	monster.falling = strings.EqualFold(monster.Action, "falling")
+	monster.verticalVelocity = 0
+
 	s.entitiesMu.Lock()
 	s.monsters[monster.ID] = monster
 	s.entitiesMu.Unlock()
@@ -135,6 +158,53 @@ func (s *Server) RemoveMonster(id string) bool {
 	delete(s.monsters, id)
 	s.entitiesMu.Unlock()
 	return exists
+}
+
+
+// runMonsterSimulation applies simple server-authoritative gravity to test monsters.
+// Keeping the simulation on the server means clients only render the received transform.
+func (s *Server) runMonsterSimulation(ctx context.Context, finished <-chan struct{}) {
+	ticker := time.NewTicker(monsterPhysicsTick)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-finished:
+			return
+		case <-ticker.C:
+			s.simulateMonsterFall(monsterPhysicsTick.Seconds())
+		}
+	}
+}
+
+// simulateMonsterFall advances all falling monsters and clamps them to their server
+// heightmap surface so the model's base cannot fall through or hover above the ground.
+func (s *Server) simulateMonsterFall(deltaSeconds float64) {
+	if deltaSeconds <= 0 || math.IsNaN(deltaSeconds) || math.IsInf(deltaSeconds, 0) {
+		return
+	}
+
+	s.entitiesMu.Lock()
+	defer s.entitiesMu.Unlock()
+
+	for id, monster := range s.monsters {
+		if !monster.Alive || !monster.falling {
+			continue
+		}
+
+		monster.verticalVelocity -= monsterGravity * deltaSeconds
+		monster.Position.Y += monster.verticalVelocity * deltaSeconds
+		if monster.Position.Y <= monster.groundY {
+			monster.Position.Y = monster.groundY
+			monster.verticalVelocity = 0
+			monster.falling = false
+			monster.Action = "idle"
+			monster.AIState = "idle"
+		}
+		s.monsters[id] = monster
+	}
 }
 
 // AddGroundItem adds or replaces an item lying on the ground.
