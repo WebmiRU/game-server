@@ -25,6 +25,8 @@ type wireResponse struct {
 	Message         string             `json:"message"`
 	ProtocolVersion int                `json:"protocolVersion"`
 	PlayerID        string             `json:"playerId"`
+	RequestID       int                `json:"requestId"`
+	RetryAfter      float64            `json:"retryAfter"`
 	World           *worldmap.Summary  `json:"world"`
 	Height          *float64           `json:"height"`
 	X               *float64           `json:"x"`
@@ -56,6 +58,7 @@ type testRequest struct {
 	MoveTargetZ float64 `json:"moveTargetZ,omitempty"`
 	TargetType string  `json:"targetType,omitempty"`
 	TargetID   string  `json:"targetId,omitempty"`
+	RequestID  int     `json:"requestId,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
 	RotationZ *float64 `json:"rotationZ,omitempty"`
@@ -716,6 +719,84 @@ func TestPlayerAttackSpeedDefaultsAndCanChange(t *testing.T) {
 	}
 	if server.SetPlayerAttackSpeed("", 2) {
 		t.Fatal("empty player ID should be rejected")
+	}
+}
+
+
+func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	if !server.UpsertMonster(MonsterState{
+		ID: "target-near", TemplateID: "test-sphere-enemy", Name: "Target",
+		Position: worldmap.Vec3{X: 11.7, Y: 50, Z: 10},
+		Health: 100, MaxHealth: 100, Alive: true,
+	}) {
+		t.Fatal("failed to add nearby attack target")
+	}
+	if !server.UpsertMonster(MonsterState{
+		ID: "target-far", TemplateID: "test-sphere-enemy", Name: "Far Target",
+		Position: worldmap.Vec3{X: 30, Y: 50, Z: 10},
+		Health: 100, MaxHealth: 100, Alive: true,
+	}) {
+		t.Fatal("failed to add distant attack target")
+	}
+
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+	sendRequest(t, conn, testRequest{
+		Type: "player_state",
+		X: float64PointerForTest(10), Y: float64PointerForTest(50), Z: float64PointerForTest(10),
+		RotationX: float64PointerForTest(0), RotationY: float64PointerForTest(0),
+		RotationZ: float64PointerForTest(0), RotationW: float64PointerForTest(1),
+	})
+	stateResponse := readWireResponse(t, scanner)
+	if stateResponse.Type != "player_state_result" {
+		t.Fatalf("player state response type = %q, want player_state_result", stateResponse.Type)
+	}
+	assertSuccess(t, stateResponse, true)
+
+	if !server.SetPlayerAttackSpeed("player1", 2.0) {
+		t.Fatal("failed to set attack speed")
+	}
+
+	sendRequest(t, conn, testRequest{
+		Type: "attack", TargetType: "monster", TargetID: "target-near", RequestID: 101,
+	})
+	attackResponse := readWireResponse(t, scanner)
+	if attackResponse.Type != "attack_result" {
+		t.Fatalf("attack response type = %q, want attack_result", attackResponse.Type)
+	}
+	assertSuccess(t, attackResponse, true)
+	if attackResponse.RequestID != 101 {
+		t.Fatalf("attack response requestId = %d, want 101", attackResponse.RequestID)
+	}
+	if attackResponse.Target == nil || attackResponse.Target.ID != "target-near" {
+		t.Fatalf("attack target = %+v, want target-near", attackResponse.Target)
+	}
+	if math.Abs(attackResponse.AttackSpeed-2.0) > 0.0001 {
+		t.Fatalf("attack speed = %.3f, want 2.0", attackResponse.AttackSpeed)
+	}
+
+	// A second attack within the server-controlled interval is rejected.
+	sendRequest(t, conn, testRequest{
+		Type: "attack", TargetType: "monster", TargetID: "target-near", RequestID: 102,
+	})
+	cooldownResponse := readWireResponse(t, scanner)
+	assertSuccess(t, cooldownResponse, false)
+	if cooldownResponse.Type != "attack_result" || cooldownResponse.Message != "attack_cooldown" {
+		t.Fatalf("cooldown response = %+v", cooldownResponse)
+	}
+	if cooldownResponse.RetryAfter <= 0 {
+		t.Fatalf("retryAfter = %.3f, want positive cooldown", cooldownResponse.RetryAfter)
+	}
+
+	// Range is validated before the cooldown so the client can resume approach immediately.
+	sendRequest(t, conn, testRequest{
+		Type: "attack", TargetType: "monster", TargetID: "target-far", RequestID: 103,
+	})
+	rangeResponse := readWireResponse(t, scanner)
+	assertSuccess(t, rangeResponse, false)
+	if rangeResponse.Message != "attack_out_of_range" || rangeResponse.RequestID != 103 {
+		t.Fatalf("out-of-range response = %+v", rangeResponse)
 	}
 }
 
