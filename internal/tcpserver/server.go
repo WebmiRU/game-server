@@ -158,7 +158,6 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			continue
 		}
 
-		s.handlers.Add(1)
 		go func(client net.Conn) {
 			defer s.handlers.Done()
 			s.handleConnection(client)
@@ -175,6 +174,8 @@ func (s *Server) registerConnection(conn net.Conn) bool {
 		return false
 	}
 	s.connections[conn] = struct{}{}
+	// Keep WaitGroup.Add protected by the same lock used by shutdown so Add cannot race Wait.
+	s.handlers.Add(1)
 	return true
 }
 
