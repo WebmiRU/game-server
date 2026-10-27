@@ -74,6 +74,10 @@ type Server struct {
 	stateVersion   uint64
 	savedVersion   uint64
 
+	entitiesMu  sync.RWMutex
+	monsters    map[string]MonsterState
+	groundItems map[string]GroundItemState
+
 	stateSaveMu sync.Mutex
 	stateLogMu  sync.Mutex
 	lastStateLog time.Time
@@ -120,8 +124,11 @@ func New(config Config) *Server {
 		stateSaveInterval: stateSaveInterval,
 		playerStates:      make(map[string]PlayerState),
 		playerSessions:    make(map[string]net.Conn),
+		monsters:          make(map[string]MonsterState),
+		groundItems:       make(map[string]GroundItemState),
 		connections:       make(map[net.Conn]struct{}),
 	}
+	server.seedTestMonsters()
 	if err := server.loadPlayerStates(); err != nil {
 		logger.Printf("WARNING: cannot load player states from %q: %v; using fresh spawns", server.stateFile, err)
 	}
@@ -129,12 +136,13 @@ func New(config Config) *Server {
 }
 
 type request struct {
-	Type      string   `json:"type"`
-	Username  string   `json:"username,omitempty"`
-	Password  string   `json:"password,omitempty"`
-	X         *float64 `json:"x,omitempty"`
-	Y         *float64 `json:"y,omitempty"`
-	Z         *float64 `json:"z,omitempty"`
+	Type            string   `json:"type"`
+	Username        string   `json:"username,omitempty"`
+	Password        string   `json:"password,omitempty"`
+	X               *float64 `json:"x,omitempty"`
+	Y               *float64 `json:"y,omitempty"`
+	Z               *float64 `json:"z,omitempty"`
+	VisibilityRange  *float64 `json:"visibilityRange,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
 	RotationZ *float64 `json:"rotationZ,omitempty"`
@@ -165,21 +173,25 @@ type playerStateFile struct {
 }
 
 type response struct {
-	Type            string            `json:"type"`
-	Success         *bool             `json:"success,omitempty"`
-	Message         string            `json:"message,omitempty"`
-	ProtocolVersion int               `json:"protocolVersion,omitempty"`
-	PlayerID        string            `json:"playerId,omitempty"`
-	World           *worldmap.Summary `json:"world,omitempty"`
-	Height          *float64          `json:"height,omitempty"`
-	X               *float64          `json:"x,omitempty"`
-	Y               *float64          `json:"y,omitempty"`
-	Z               *float64          `json:"z,omitempty"`
-	RotationX       *float64          `json:"rotationX,omitempty"`
-	RotationY       *float64          `json:"rotationY,omitempty"`
-	RotationZ       *float64          `json:"rotationZ,omitempty"`
-	RotationW       *float64          `json:"rotationW,omitempty"`
-	PositionIsRoot  bool              `json:"positionIsRoot,omitempty"`
+	Type            string             `json:"type"`
+	Success         *bool              `json:"success,omitempty"`
+	Message         string             `json:"message,omitempty"`
+	ProtocolVersion int                `json:"protocolVersion,omitempty"`
+	PlayerID        string             `json:"playerId,omitempty"`
+	World           *worldmap.Summary  `json:"world,omitempty"`
+	Height          *float64           `json:"height,omitempty"`
+	X               *float64           `json:"x,omitempty"`
+	Y               *float64           `json:"y,omitempty"`
+	Z               *float64           `json:"z,omitempty"`
+	RotationX       *float64           `json:"rotationX,omitempty"`
+	RotationY       *float64           `json:"rotationY,omitempty"`
+	RotationZ       *float64           `json:"rotationZ,omitempty"`
+	RotationW       *float64           `json:"rotationW,omitempty"`
+	PositionIsRoot  bool               `json:"positionIsRoot,omitempty"`
+	VisibilityRange *float64           `json:"visibilityRange,omitempty"`
+	Players         []NearbyPlayer      `json:"players,omitempty"`
+	Monsters        []MonsterState      `json:"monsters,omitempty"`
+	Items           []GroundItemState   `json:"items,omitempty"`
 }
 
 // ListenAndServe starts the TCP listener and exits when ctx is cancelled or the listener fails.
@@ -728,6 +740,9 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req 
 	case "player_state":
 		return s.handlePlayerState(conn, playerID, req)
 
+	case "world_interest":
+		return s.handleWorldInterest(conn, playerID, req)
+
 	case "height_at":
 		if req.X == nil || req.Z == nil {
 			return s.writeResponse(conn, response{
@@ -764,6 +779,57 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req 
 			Message: "unknown_message_type",
 		})
 	}
+}
+
+func (s *Server) handleWorldInterest(conn net.Conn, playerID string, req request) error {
+	if req.X == nil || req.Y == nil || req.Z == nil {
+		return s.writeResponse(conn, response{
+			Type:    "world_snapshot",
+			Success: boolPointer(false),
+			Message: "position_required",
+		})
+	}
+
+	center := worldmap.Vec3{X: *req.X, Y: *req.Y, Z: *req.Z}
+	if !finiteNumber(center.X) || !finiteNumber(center.Y) || !finiteNumber(center.Z) {
+		return s.writeResponse(conn, response{
+			Type:    "world_snapshot",
+			Success: boolPointer(false),
+			Message: "non_finite_position",
+		})
+	}
+	if s.world != nil {
+		if _, insideWorld := s.world.HeightAtWorld(center.X, center.Z); !insideWorld {
+			return s.writeResponse(conn, response{
+				Type:    "world_snapshot",
+				Success: boolPointer(false),
+				Message: "coordinates_outside_world",
+			})
+		}
+		world := s.world.Summary()
+		if center.Y < world.Origin.Y-5 || center.Y > world.Origin.Y+world.Size.Y+5 {
+			return s.writeResponse(conn, response{
+				Type:    "world_snapshot",
+				Success: boolPointer(false),
+				Message: "height_outside_world",
+			})
+		}
+	}
+
+	radius := DefaultVisibilityRange
+	if req.VisibilityRange != nil {
+		radius = *req.VisibilityRange
+	}
+	radius = clampVisibilityRange(radius)
+	players, monsters, items := s.worldSnapshot(playerID, center, radius)
+	return s.writeResponse(conn, response{
+		Type:            "world_snapshot",
+		Success:         boolPointer(true),
+		VisibilityRange: float64Pointer(radius),
+		Players:          players,
+		Monsters:         monsters,
+		Items:            items,
+	})
 }
 
 func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) error {
