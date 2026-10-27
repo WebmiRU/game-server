@@ -503,6 +503,101 @@ func TestWorldInterestReturnsOnlyNearbyEntitiesAndClampsRange(t *testing.T) {
 	}
 }
 
+func TestPlayerMovementStopsAtBoxMonster(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	if !server.UpsertMonster(MonsterState{
+		ID: "dog", TemplateID: "test-cube-enemy", Name: "Enemy 1",
+		Position: worldmap.Vec3{X: 2, Y: 0, Z: 0},
+		Rotation: PlayerRotation{W: 1}, Alive: true,
+	}) {
+		t.Fatal("failed to add box monster")
+	}
+
+	resolved := server.resolvePlayerMovement(
+		"player1",
+		worldmap.Vec3{X: 0, Y: 0, Z: 0},
+		worldmap.Vec3{X: 2, Y: 0, Z: 0},
+	)
+	if resolved.X > 0.751 || resolved.X < 0.4 {
+		t.Fatalf("resolved X = %.3f; want player stopped near box edge at X <= 0.75 and > 0.4", resolved.X)
+	}
+	if math.Abs(resolved.Z) > 1e-9 {
+		t.Fatalf("unexpected lateral movement around a head-on obstacle: Z=%v", resolved.Z)
+	}
+}
+
+func TestPlayerMovementStopsAtOtherPlayer(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	server.playerStates["player2"] = PlayerState{
+		PlayerID: "player2",
+		Position: worldmap.Vec3{X: 2, Y: 0, Z: 0},
+		Online:   true,
+	}
+	server.playerSessions["player2"] = nil
+
+	resolved := server.resolvePlayerMovement(
+		"player1",
+		worldmap.Vec3{X: 0, Y: 0, Z: 0},
+		worldmap.Vec3{X: 2, Y: 0, Z: 0},
+	)
+	if resolved.X > 1.501 || resolved.X < 1.2 {
+		t.Fatalf("resolved X = %.3f; want player stopped near other player's cylinder at X <= 1.5", resolved.X)
+	}
+}
+
+func TestBoxCollisionUsesServerRotation(t *testing.T) {
+	rotated90 := PlayerRotation{Y: math.Sqrt(0.5), W: math.Sqrt(0.5)}
+	if !circleOverlapsRotatedBox(1.8, 0, PlayerColliderRadius, 0, 0, 2, 4, rotated90) {
+		t.Fatal("player circle should overlap the long side of a box rotated 90 degrees")
+	}
+	if circleOverlapsRotatedBox(1.8, 0, PlayerColliderRadius, 0, 0, 2, 4, PlayerRotation{W: 1}) {
+		t.Fatal("player circle should not overlap the short side of the same unrotated box")
+	}
+}
+
+func TestPlayerStateSendsServerCollisionCorrection(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	if !server.UpsertMonster(MonsterState{
+		ID: "dog", TemplateID: "test-cube-enemy", Name: "Enemy 1",
+		Position: worldmap.Vec3{X: 2, Y: 0, Z: 0},
+		Rotation: PlayerRotation{W: 1}, Alive: true,
+	}) {
+		t.Fatal("failed to add box monster")
+	}
+
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+
+	sendRequest(t, conn, testRequest{
+		Type: "player_state",
+		X: float64PointerForTest(0), Y: float64PointerForTest(0), Z: float64PointerForTest(0),
+		RotationX: float64PointerForTest(0), RotationY: float64PointerForTest(0),
+		RotationZ: float64PointerForTest(0), RotationW: float64PointerForTest(1),
+	})
+	first := readWireResponse(t, scanner)
+	if first.Type != "player_state_result" || first.Message != "state_registered" {
+		t.Fatalf("initial position response = %+v", first)
+	}
+
+	sendRequest(t, conn, testRequest{
+		Type: "player_state",
+		X: float64PointerForTest(2), Y: float64PointerForTest(0), Z: float64PointerForTest(0),
+		RotationX: float64PointerForTest(0), RotationY: float64PointerForTest(0),
+		RotationZ: float64PointerForTest(0), RotationW: float64PointerForTest(1),
+	})
+	correction := readWireResponse(t, scanner)
+	if correction.Type != "player_state_result" || correction.Message != "server_collision_correction" {
+		t.Fatalf("collision response = %+v, want server_collision_correction", correction)
+	}
+	assertSuccess(t, correction, true)
+	if correction.X == nil || *correction.X > 0.751 {
+		t.Fatalf("corrected X = %v, want X <= 0.75", correction.X)
+	}
+	if got := server.playerStates["player1"].Position.X; math.Abs(got-*correction.X) > 1e-9 {
+		t.Fatalf("stored X = %v, correction X = %v", got, *correction.X)
+	}
+}
+
 func TestVisibilityRangeClampsToMaximum(t *testing.T) {
 	if got := clampVisibilityRange(1000); got != MaxVisibilityRange {
 		t.Fatalf("clampVisibilityRange(1000) = %v, want %v", got, MaxVisibilityRange)
