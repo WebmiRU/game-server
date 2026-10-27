@@ -19,11 +19,26 @@ const (
 	monsterPhysicsTick     = 50 * time.Millisecond
 )
 
+const (
+	ColliderCylinder = "cylinder"
+	ColliderBox      = "box"
+)
+
+// ColliderDefinition is shared by server simulation and client collision proxies.
+// Positions refer to the bottom-centre of each vertical collider.
+type ColliderDefinition struct {
+	Shape  string        `json:"shape"`
+	Radius float64       `json:"radius,omitempty"`
+	Height float64       `json:"height"`
+	Size   worldmap.Vec3 `json:"size,omitempty"`
+}
+
 // NearbyPlayer is the compact representation sent to clients for another active player.
 type NearbyPlayer struct {
 	PlayerID string              `json:"playerId"`
 	Position worldmap.Vec3       `json:"position"`
 	Rotation PlayerRotation      `json:"rotation"`
+	Collider ColliderDefinition  `json:"collider"`
 }
 
 // MonsterState is a server-owned monster entry. AIState is "idle" for the current
@@ -40,6 +55,7 @@ type MonsterState struct {
 	Alive      bool              `json:"alive"`
 	Action     string            `json:"action"`
 	AIState    string            `json:"aiState"`
+	Collider   ColliderDefinition `json:"collider"`
 
 	// Physics bookkeeping stays server-side; clients receive only Position and Action.
 	groundY          float64
@@ -95,14 +111,14 @@ func (s *Server) seedTestMonsters() {
 			TemplateID: seed.templateID,
 			Name:       seed.name,
 			Position:   worldmap.Vec3{X: seed.x, Y: y + 5, Z: seed.z},
-			// Identity quaternion is explicit: the smiley face's local +Z direction
-			// is its fixed forward direction until a different rotation is configured.
+			// Identity quaternion is explicit: the dog's face points +Z and its tail points -Z.
 			Rotation:          PlayerRotation{X: 0, Y: 0, Z: 0, W: 1},
 			Health:            100,
 			MaxHealth:         100,
 			Alive:             true,
 			Action:            "falling",
 			AIState:           "falling",
+			Collider:          colliderForMonster(MonsterState{TemplateID: seed.templateID}),
 			groundY:           y,
 			verticalVelocity:  0,
 			falling:           true,
@@ -135,6 +151,7 @@ func (s *Server) UpsertMonster(monster MonsterState) bool {
 	if strings.TrimSpace(monster.AIState) == "" {
 		monster.AIState = "idle"
 	}
+	monster.Collider = colliderForMonster(monster)
 
 	monster.groundY = monster.Position.Y
 	if s.world != nil {
@@ -255,6 +272,7 @@ func (s *Server) worldSnapshot(requestingPlayerID string, center worldmap.Vec3, 
 			PlayerID: state.PlayerID,
 			Position: state.Position,
 			Rotation: state.Rotation,
+			Collider: playerColliderDefinition(),
 		})
 	}
 
@@ -263,6 +281,7 @@ func (s *Server) worldSnapshot(requestingPlayerID string, center worldmap.Vec3, 
 	s.entitiesMu.RLock()
 	for _, monster := range s.monsters {
 		if monster.Alive && positionWithinRange(center, monster.Position, radius) {
+			monster.Collider = colliderForMonster(monster)
 			nearbyMonsters = append(nearbyMonsters, monster)
 		}
 	}
