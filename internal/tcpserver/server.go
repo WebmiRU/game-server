@@ -90,6 +90,9 @@ type Server struct {
 	monsters    map[string]MonsterState
 	groundItems map[string]GroundItemState
 
+	targetsMu    sync.RWMutex
+	playerTargets map[string]TargetReference
+
 	stateSaveMu sync.Mutex
 	stateLogMu  sync.Mutex
 	lastStateLog time.Time
@@ -144,6 +147,7 @@ func New(config Config) *Server {
 		playerSessions:    make(map[string]net.Conn),
 		monsters:          make(map[string]MonsterState),
 		groundItems:       make(map[string]GroundItemState),
+		playerTargets:     make(map[string]TargetReference),
 		connections:       make(map[net.Conn]struct{}),
 	}
 	server.seedTestMonsters()
@@ -164,6 +168,8 @@ type request struct {
 	HasMoveTarget    bool    `json:"hasMoveTarget,omitempty"`
 	MoveTargetX      float64 `json:"moveTargetX,omitempty"`
 	MoveTargetZ      float64 `json:"moveTargetZ,omitempty"`
+	TargetType       string  `json:"targetType,omitempty"`
+	TargetID         string  `json:"targetId,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
 	RotationZ *float64 `json:"rotationZ,omitempty"`
@@ -217,6 +223,7 @@ type response struct {
 	RotationW       *float64           `json:"rotationW,omitempty"`
 	PositionIsRoot  bool               `json:"positionIsRoot,omitempty"`
 	VisibilityRange *float64           `json:"visibilityRange,omitempty"`
+	Target          *TargetReference    `json:"target,omitempty"`
 	Players         []NearbyPlayer      `json:"players,omitempty"`
 	Monsters        []MonsterState      `json:"monsters,omitempty"`
 	Items           []GroundItemState   `json:"items,omitempty"`
@@ -353,12 +360,12 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 		return
 	}
 	s.movementMu.Lock()
-	defer s.movementMu.Unlock()
 	s.playersMu.Lock()
-	defer s.playersMu.Unlock()
 
 	// An older connection must not alter a newer session or its current state.
 	if current, ok := s.playerSessions[playerID]; !ok || current != conn {
+		s.playersMu.Unlock()
+		s.movementMu.Unlock()
 		return
 	}
 	delete(s.playerSessions, playerID)
@@ -367,6 +374,19 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 		state.Online = false
 		s.playerStates[playerID] = state
 	}
+
+	// Release player locks before touching targetsMu: target validation reads player state.
+	s.playersMu.Unlock()
+	s.movementMu.Unlock()
+
+	s.targetsMu.Lock()
+	delete(s.playerTargets, playerID)
+	for ownerID, target := range s.playerTargets {
+		if target.Type == "player" && target.ID == playerID {
+			delete(s.playerTargets, ownerID)
+		}
+	}
+	s.targetsMu.Unlock()
 }
 
 func (s *Server) spawnResponseForPlayer(playerID string) response {
@@ -919,6 +939,9 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req 
 	case "world_interest":
 		return s.handleWorldInterest(conn, playerID, req)
 
+	case "set_target":
+		return s.handleSetTarget(conn, playerID, req)
+
 	case "height_at":
 		if req.X == nil || req.Z == nil {
 			return s.writeResponse(conn, response{
@@ -977,10 +1000,120 @@ func (s *Server) handleWorldInterest(conn net.Conn, playerID string, req request
 		Type:            "world_snapshot",
 		Success:         boolPointer(true),
 		VisibilityRange: float64Pointer(radius),
+		Target:           s.currentPlayerTarget(playerID),
 		Players:          players,
 		Monsters:         monsters,
 		Items:            items,
 	})
+}
+
+func (s *Server) handleSetTarget(conn net.Conn, playerID string, req request) error {
+	target, success, message := s.setPlayerTarget(playerID, req.TargetType, req.TargetID)
+	return s.writeResponse(conn, response{
+		Type:     "target_result",
+		Success:  boolPointer(success),
+		Message:  message,
+		PlayerID: playerID,
+		Target:   target,
+	})
+}
+
+// setPlayerTarget validates the requested reference and atomically replaces this player's target.
+// An empty type and ID explicitly clear the target.
+func (s *Server) setPlayerTarget(playerID, targetType, targetID string) (*TargetReference, bool, string) {
+	targetType = strings.ToLower(strings.TrimSpace(targetType))
+	targetID = strings.TrimSpace(targetID)
+
+	s.targetsMu.Lock()
+	defer s.targetsMu.Unlock()
+
+	if targetType == "" && targetID == "" {
+		delete(s.playerTargets, playerID)
+		return nil, true, "target_cleared"
+	}
+	if targetType == "" || targetID == "" {
+		delete(s.playerTargets, playerID)
+		return nil, false, "invalid_target_reference"
+	}
+
+	target, exists := s.resolveTargetLocked(playerID, targetType, targetID)
+	if !exists {
+		delete(s.playerTargets, playerID)
+		return nil, false, "target_not_found"
+	}
+
+	s.playerTargets[playerID] = target
+	return &target, true, "target_set"
+}
+
+// currentPlayerTarget revalidates references whenever a snapshot is sent, so a stale target
+// cannot survive an entity removal or death even if an alternate code path forgot cleanup.
+func (s *Server) currentPlayerTarget(playerID string) *TargetReference {
+	s.targetsMu.Lock()
+	defer s.targetsMu.Unlock()
+
+	current, exists := s.playerTargets[playerID]
+	if !exists {
+		return nil
+	}
+	target, valid := s.resolveTargetLocked(playerID, current.Type, current.ID)
+	if !valid {
+		delete(s.playerTargets, playerID)
+		return nil
+	}
+	s.playerTargets[playerID] = target
+	return &target
+}
+
+// resolveTargetLocked is called with targetsMu held. The returned reference is based only on
+// server-owned live registries; clients cannot supply a name or position for their target.
+func (s *Server) resolveTargetLocked(playerID, targetType, targetID string) (TargetReference, bool) {
+	switch targetType {
+	case "monster":
+		s.entitiesMu.RLock()
+		monster, exists := s.monsters[targetID]
+		s.entitiesMu.RUnlock()
+		if !exists || !monster.Alive {
+			return TargetReference{}, false
+		}
+		return TargetReference{Type: "monster", ID: monster.ID, Name: monster.Name}, true
+
+	case "player":
+		if targetID == playerID {
+			return TargetReference{}, false
+		}
+		s.playersMu.RLock()
+		state, exists := s.playerStates[targetID]
+		_, connected := s.playerSessions[targetID]
+		s.playersMu.RUnlock()
+		if !exists || !connected || !state.Online {
+			return TargetReference{}, false
+		}
+		return TargetReference{Type: "player", ID: state.PlayerID, Name: state.PlayerID}, true
+
+	case "item":
+		s.entitiesMu.RLock()
+		item, exists := s.groundItems[targetID]
+		s.entitiesMu.RUnlock()
+		if !exists {
+			return TargetReference{}, false
+		}
+		return TargetReference{Type: "item", ID: item.ID, Name: item.Name}, true
+
+	default:
+		return TargetReference{}, false
+	}
+}
+
+// clearTargetReferences drops every player's selection of a removed/dead world entity.
+func (s *Server) clearTargetReferences(targetType, targetID string) {
+	s.targetsMu.Lock()
+	for ownerID, target := range s.playerTargets {
+		if target.Type == targetType && target.ID == targetID {
+			delete(s.playerTargets, ownerID)
+		}
+	}
+	s.targetsMu.Unlock()
 }
 
 func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) error {

@@ -72,6 +72,14 @@ type GroundItemState struct {
 	Quantity     int           `json:"quantity"`
 }
 
+// TargetReference identifies a live entity selected by one player.
+// References are server-owned runtime state and are intentionally not persisted with transforms.
+type TargetReference struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // clampVisibilityRange applies server-side limits even when a client sends a bad value.
 func clampVisibilityRange(value float64) float64 {
 	if !finiteNumber(value) {
@@ -165,15 +173,22 @@ func (s *Server) UpsertMonster(monster MonsterState) bool {
 	s.entitiesMu.Lock()
 	s.monsters[monster.ID] = monster
 	s.entitiesMu.Unlock()
+	if !monster.Alive {
+		s.clearTargetReferences("monster", monster.ID)
+	}
 	return true
 }
 
 // RemoveMonster removes a monster from the server registry.
 func (s *Server) RemoveMonster(id string) bool {
+	id = strings.TrimSpace(id)
 	s.entitiesMu.Lock()
 	_, exists := s.monsters[id]
 	delete(s.monsters, id)
 	s.entitiesMu.Unlock()
+	if exists {
+		s.clearTargetReferences("monster", id)
+	}
 	return exists
 }
 
@@ -239,10 +254,14 @@ func (s *Server) AddGroundItem(item GroundItemState) bool {
 
 // RemoveGroundItem removes a ground item, for example after a player picks it up.
 func (s *Server) RemoveGroundItem(id string) bool {
+	id = strings.TrimSpace(id)
 	s.entitiesMu.Lock()
 	_, exists := s.groundItems[id]
 	delete(s.groundItems, id)
 	s.entitiesMu.Unlock()
+	if exists {
+		s.clearTargetReferences("item", id)
+	}
 	return exists
 }
 

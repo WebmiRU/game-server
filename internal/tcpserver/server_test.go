@@ -36,6 +36,7 @@ type wireResponse struct {
 	RotationW       *float64           `json:"rotationW"`
 	PositionIsRoot  bool               `json:"positionIsRoot"`
 	VisibilityRange *float64           `json:"visibilityRange"`
+	Target          *TargetReference    `json:"target"`
 	Players         []NearbyPlayer      `json:"players"`
 	Monsters        []MonsterState      `json:"monsters"`
 	Items           []GroundItemState   `json:"items"`
@@ -52,6 +53,8 @@ type testRequest struct {
 	HasMoveTarget bool `json:"hasMoveTarget,omitempty"`
 	MoveTargetX float64 `json:"moveTargetX,omitempty"`
 	MoveTargetZ float64 `json:"moveTargetZ,omitempty"`
+	TargetType string  `json:"targetType,omitempty"`
+	TargetID   string  `json:"targetId,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
 	RotationZ *float64 `json:"rotationZ,omitempty"`
@@ -1018,6 +1021,111 @@ func TestListenAndServeRemainsRunningAfterWorldLoad(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not stop after context cancellation")
+	}
+}
+
+
+func TestTargetSelectionTracksLiveEntitiesAndClearsWhenRemoved(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	if !server.UpsertMonster(MonsterState{
+		ID: "monster-1", TemplateID: "test-sphere-enemy", Name: "Enemy One",
+		Position: worldmap.Vec3{X: 10, Y: 0, Z: 10},
+		Health: 100, MaxHealth: 100, Alive: true, Action: "idle",
+	}) {
+		t.Fatal("failed to add target monster")
+	}
+	if !server.AddGroundItem(GroundItemState{
+		ID: "item-1", Name: "Dropped Sword",
+		Position: worldmap.Vec3{X: 12, Y: 0, Z: 10}, Quantity: 1,
+	}) {
+		t.Fatal("failed to add target item")
+	}
+
+	// Model another connected player in the same server-owned session registry.
+	server.playersMu.Lock()
+	server.playerStates["player2"] = PlayerState{
+		PlayerID: "player2", Position: worldmap.Vec3{X: 11, Y: 0, Z: 10},
+		Rotation: PlayerRotation{W: 1}, UpdatedAt: time.Now().UTC(), Online: true,
+	}
+	server.playerSessions["player2"] = nil
+	server.playersMu.Unlock()
+
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+
+	sendRequest(t, conn, testRequest{
+		Type: "player_state",
+		X: float64PointerForTest(1), Y: float64PointerForTest(0), Z: float64PointerForTest(1),
+		RotationX: float64PointerForTest(0), RotationY: float64PointerForTest(0),
+		RotationZ: float64PointerForTest(0), RotationW: float64PointerForTest(1),
+	})
+	stateResponse := readWireResponse(t, scanner)
+	if stateResponse.Type != "player_state_result" {
+		t.Fatalf("player state response = %+v, want player_state_result", stateResponse)
+	}
+
+	sendRequest(t, conn, testRequest{Type: "set_target", TargetType: "monster", TargetID: "monster-1"})
+	monsterResponse := readWireResponse(t, scanner)
+	if monsterResponse.Type != "target_result" {
+		t.Fatalf("monster target response type = %q, want target_result", monsterResponse.Type)
+	}
+	assertSuccess(t, monsterResponse, true)
+	if monsterResponse.Target == nil || monsterResponse.Target.Type != "monster" ||
+		monsterResponse.Target.ID != "monster-1" || monsterResponse.Target.Name != "Enemy One" {
+		t.Fatalf("unexpected monster target reference: %+v", monsterResponse.Target)
+	}
+
+	sendRequest(t, conn, testRequest{Type: "world_interest"})
+	snapshot := readWireResponse(t, scanner)
+	if snapshot.Type != "world_snapshot" || snapshot.Target == nil ||
+		snapshot.Target.Type != "monster" || snapshot.Target.ID != "monster-1" {
+		t.Fatalf("world snapshot did not retain selected target: %+v", snapshot)
+	}
+
+	sendRequest(t, conn, testRequest{Type: "set_target", TargetType: "player", TargetID: "player2"})
+	playerResponse := readWireResponse(t, scanner)
+	assertSuccess(t, playerResponse, true)
+	if playerResponse.Target == nil || playerResponse.Target.Type != "player" ||
+		playerResponse.Target.ID != "player2" || playerResponse.Target.Name != "player2" {
+		t.Fatalf("unexpected player target reference: %+v", playerResponse.Target)
+	}
+
+	sendRequest(t, conn, testRequest{Type: "set_target", TargetType: "item", TargetID: "item-1"})
+	itemResponse := readWireResponse(t, scanner)
+	assertSuccess(t, itemResponse, true)
+	if itemResponse.Target == nil || itemResponse.Target.Type != "item" ||
+		itemResponse.Target.ID != "item-1" || itemResponse.Target.Name != "Dropped Sword" {
+		t.Fatalf("unexpected item target reference: %+v", itemResponse.Target)
+	}
+
+	if !server.RemoveGroundItem("item-1") {
+		t.Fatal("failed to remove item target")
+	}
+	if target := server.currentPlayerTarget("player1"); target != nil {
+		t.Fatalf("target still points to picked-up item: %+v", target)
+	}
+
+	sendRequest(t, conn, testRequest{Type: "set_target", TargetType: "monster", TargetID: "missing"})
+	invalidResponse := readWireResponse(t, scanner)
+	if invalidResponse.Type != "target_result" || invalidResponse.Message != "target_not_found" {
+		t.Fatalf("invalid target response = %+v", invalidResponse)
+	}
+	assertSuccess(t, invalidResponse, false)
+	if target := server.currentPlayerTarget("player1"); target != nil {
+		t.Fatalf("invalid target request left a target selected: %+v", target)
+	}
+
+	sendRequest(t, conn, testRequest{Type: "set_target", TargetType: "monster", TargetID: "monster-1"})
+	assertSuccess(t, readWireResponse(t, scanner), true)
+	if !server.UpsertMonster(MonsterState{
+		ID: "monster-1", TemplateID: "test-sphere-enemy", Name: "Enemy One",
+		Position: worldmap.Vec3{X: 10, Y: 0, Z: 10},
+		Health: 0, MaxHealth: 100, Alive: false, Action: "dead",
+	}) {
+		t.Fatal("failed to mark target monster dead")
+	}
+	if target := server.currentPlayerTarget("player1"); target != nil {
+		t.Fatalf("dead monster is still targeted: %+v", target)
 	}
 }
 
