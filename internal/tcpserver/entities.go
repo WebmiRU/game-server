@@ -17,9 +17,8 @@ const (
 	MaxVisibilityRange     = 500.0
 	monsterGravity         = 9.81
 	monsterPhysicsTick     = 50 * time.Millisecond
-	// Keep dead monsters in world snapshots long enough for clients to play the death animation,
-	// wait five seconds, and fade the corpse out smoothly.
-	MonsterCorpseRetention = 8 * time.Second
+	// Death animation (1s) + five-second wait + smooth fade (1.5s), with a small cleanup margin.
+	MonsterCorpseRetention = 7 * time.Second
 )
 
 const (
