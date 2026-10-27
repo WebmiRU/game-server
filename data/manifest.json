@@ -27,9 +27,9 @@
     "heightFormula": "worldY = origin.y + (sample / 65535.0) * size.y",
     "dataFile": "terrain.u16",
     "dataLengthBytes": 526338,
-    "sha256": "3d6690aba4487f231ecc88ced7cc16d4acb2902e1192d4609b0950cc9bcf3d33",
-    "minimumSample": 2668,
+    "sha256": "5ab0651d9a2767980b619bfe7e7928686b18d379776101d530864b9a92b01add",
+    "minimumSample": 2644,
     "maximumSample": 34220,
-    "minimumHeightWorld": 24.4266414642334,
+    "minimumHeightWorld": 24.206912994384766,
     "maximumHeightWorld": 313.2982482910156
 }
