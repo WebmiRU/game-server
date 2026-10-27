@@ -23,7 +23,7 @@ func main() {
 	)
 	mapDir := flag.String(
 		"map-dir",
-		envOrDefault("GAME_WORLD_DIR", "data/world/starter"),
+		envOrDefault("GAME_WORLD_DIR", "data"),
 		"directory containing GWM manifest.json and terrain.u16",
 	)
 	requireMap := flag.Bool(
