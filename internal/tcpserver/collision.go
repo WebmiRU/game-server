@@ -72,13 +72,35 @@ func colliderForMonster(monster MonsterState) ColliderDefinition {
 // the requested position. Axis-separated fallback permits sliding along an obstacle
 // instead of making movement feel like it hit an invisible wall.
 func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap.Vec3) worldmap.Vec3 {
+	groundPosition := func(position worldmap.Vec3) worldmap.Vec3 {
+		// In the current prototype players cannot jump or fly. The server's heightmap
+		// owns player Y and prevents a client from lifting itself over a collider.
+		if s.world != nil {
+			if terrainY, ok := s.world.HeightAtWorld(position.X, position.Z); ok {
+				position.Y = terrainY + 0.05 // client's CharacterController foot offset
+			}
+		}
+		return position
+	}
+
+	from = groundPosition(from)
+
+	// A player may already overlap an entity because of older movement code, latency,
+	// or a collider introduced while the player was standing still. Do not treat that
+	// invalid starting overlap as a wall in every direction: first find the nearest
+	// valid point around it, then resolve the requested movement from there.
+	if s.playerPositionCollides(playerID, from) {
+		if escaped, ok := s.findNearbyFreePosition(playerID, from, groundPosition); ok {
+			from = escaped
+		}
+	}
+
 	dx := requested.X - from.X
 	dz := requested.Z - from.Z
 	dy := requested.Y - from.Y
 	horizontalDistance := math.Hypot(dx, dz)
 
-	// Limit an individual update to a generous distance above normal client movement.
-	// This also bounds the amount of collision work for malformed/teleport-like requests.
+	// Bound malformed/teleport-like movement updates to keep collision work predictable.
 	if horizontalDistance > maxPlayerMovePerUpdate {
 		scale := maxPlayerMovePerUpdate / horizontalDistance
 		dx *= scale
@@ -105,56 +127,73 @@ func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap
 	stepX := dx / float64(steps)
 	stepY := (requested.Y - from.Y) / float64(steps)
 	stepZ := dz / float64(steps)
-
-	groundPosition := func(position worldmap.Vec3) worldmap.Vec3 {
-		// In the current game prototype players cannot jump or fly. The server's
-		// heightmap therefore owns player Y as well as X/Z; never trust a client's
-		// vertical coordinate to lift it over a monster or another player.
-		if s.world != nil {
-			if terrainY, ok := s.world.HeightAtWorld(position.X, position.Z); ok {
-				position.Y = terrainY + 0.05 // client CharacterController foot offset
-			}
-			return position
-		}
-		return position
-	}
-
 	for step := 0; step < steps; step++ {
-		// Every substep starts at the last accepted location. Do not sample the original
-		// straight line after a block: doing so could jump to the far side of a collider.
-		next := worldmap.Vec3{
+		// Each substep starts at the latest accepted point to prevent tunnelling.
+		next := groundPosition(worldmap.Vec3{
 			X: current.X + stepX,
 			Y: current.Y + stepY,
 			Z: current.Z + stepZ,
-		}
-		next = groundPosition(next)
+		})
 		if !s.playerPositionCollides(playerID, next) {
 			current = next
 			continue
 		}
 
 		// Try sliding along each horizontal axis independently.
-		xOnly := worldmap.Vec3{
+		xOnly := groundPosition(worldmap.Vec3{
 			X: current.X + stepX,
 			Y: current.Y + stepY,
 			Z: current.Z,
-		}
-		xOnly = groundPosition(xOnly)
+		})
 		if !s.playerPositionCollides(playerID, xOnly) {
 			current = xOnly
 		}
 
-		zOnly := worldmap.Vec3{
+		zOnly := groundPosition(worldmap.Vec3{
 			X: current.X,
 			Y: current.Y + stepY,
 			Z: current.Z + stepZ,
-		}
-		zOnly = groundPosition(zOnly)
+		})
 		if !s.playerPositionCollides(playerID, zOnly) {
 			current = zOnly
 		}
 	}
 	return current
+}
+
+// findNearbyFreePosition recovers an entity that begins inside a collider. It searches
+// concentric rings around the old position and returns the closest sampled free point.
+// Terrain height is recalculated for every candidate so recovery does not float above slopes.
+func (s *Server) findNearbyFreePosition(
+	playerID string,
+	origin worldmap.Vec3,
+	groundPosition func(worldmap.Vec3) worldmap.Vec3,
+) (worldmap.Vec3, bool) {
+	const (
+		directions = 32
+		radiusStep = 0.1
+		maxRadius  = 6.0
+	)
+
+	for radius := radiusStep; radius <= maxRadius+collisionEpsilon; radius += radiusStep {
+		for direction := 0; direction < directions; direction++ {
+			angle := 2 * math.Pi * float64(direction) / directions
+			candidate := groundPosition(worldmap.Vec3{
+				X: origin.X + math.Cos(angle)*radius,
+				Y: origin.Y,
+				Z: origin.Z + math.Sin(angle)*radius,
+			})
+			if s.world != nil {
+				if _, insideWorld := s.world.HeightAtWorld(candidate.X, candidate.Z); !insideWorld {
+					continue
+				}
+			}
+			if !s.playerPositionCollides(playerID, candidate) {
+				return candidate, true
+			}
+		}
+	}
+	return origin, false
 }
 
 func (s *Server) playerPositionCollides(playerID string, position worldmap.Vec3) bool {
