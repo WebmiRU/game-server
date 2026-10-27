@@ -343,6 +343,9 @@ func (s *Server) simulateMonsterFall(deltaSeconds float64) {
 	now := time.Now()
 	s.pruneExpiredMonsterCorpses(now)
 	s.respawnDueMonsters(now)
+	// Read active player positions before locking entities. Falling monsters yield to
+	// these positions and are shifted sideways by the server instead of moving players.
+	players := s.PlayerStates()
 	s.entitiesMu.Lock()
 	defer s.entitiesMu.Unlock()
 
@@ -351,12 +354,53 @@ func (s *Server) simulateMonsterFall(deltaSeconds float64) {
 			continue
 		}
 
-		monster.verticalVelocity -= monsterGravity * deltaSeconds
-		monster.Position.Y += monster.verticalVelocity * deltaSeconds
-		if monster.Position.Y <= monster.groundY {
-			monster.Position.Y = monster.groundY
-			monster.verticalVelocity = 0
-			monster.falling = false
+		nextVelocity := monster.verticalVelocity - monsterGravity*deltaSeconds
+		nextPosition := monster.Position
+		nextPosition.Y += nextVelocity * deltaSeconds
+		nextFalling := true
+		if nextPosition.Y <= monster.groundY {
+			nextPosition.Y = monster.groundY
+			nextVelocity = 0
+			nextFalling = false
+		}
+
+		if safePosition, found := s.findMonsterPositionAwayFromPlayers(monster, nextPosition, players); found {
+			if safePosition.X != nextPosition.X || safePosition.Z != nextPosition.Z {
+				nextPosition.X = safePosition.X
+				nextPosition.Z = safePosition.Z
+				if s.world != nil {
+					if terrainY, ok := s.world.HeightAtWorld(nextPosition.X, nextPosition.Z); ok {
+						monster.groundY = terrainY
+						if !nextFalling {
+							nextPosition.Y = terrainY
+						}
+					}
+				}
+			}
+		} else {
+			// If the whole nearby area is occupied, stop just above the player's head
+			// and retry on the next tick. Never solve a mob/player overlap by displacing
+			// the player or by leaving the monster interpenetrating their collider.
+			safeBottom := nextPosition.Y
+			for _, player := range players {
+				if monsterOverlapsPlayerAt(monster, nextPosition, player) {
+					safeBottom = math.Max(safeBottom, player.Position.Y+PlayerColliderHeight+0.01)
+				}
+			}
+			if safeBottom > nextPosition.Y {
+				nextPosition.Y = safeBottom
+				nextVelocity = 0
+				nextFalling = true
+			}
+		}
+
+		monster.Position = nextPosition
+		monster.verticalVelocity = nextVelocity
+		monster.falling = nextFalling
+		if nextFalling {
+			monster.Action = "falling"
+			monster.AIState = "falling"
+		} else {
 			monster.Action = "idle"
 			monster.AIState = "idle"
 		}
