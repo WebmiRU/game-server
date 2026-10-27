@@ -268,6 +268,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 			authAttempts++
 			if !authenticate(req.Username, req.Password) {
+				// Log the attempted username and outcome only. Never log the password.
+				s.logger.Printf(
+					"TCP authentication failed: username=%q remote=%s",
+					req.Username,
+					conn.RemoteAddr(),
+				)
 				if err := s.writeResponse(conn, response{
 					Type:    "auth_result",
 					Success: boolPointer(false),
@@ -292,7 +298,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}); err != nil {
 				return
 			}
-			s.logger.Printf("TCP client authenticated: player=%s remote=%s", username, conn.RemoteAddr())
+			s.logger.Printf("TCP authentication succeeded: username=%q remote=%s", username, conn.RemoteAddr())
 			continue
 		}
 
