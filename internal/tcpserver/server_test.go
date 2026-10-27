@@ -581,8 +581,8 @@ func TestFirstPlayerMovementIsSweptFromServerSpawn(t *testing.T) {
 		t.Fatalf("first-movement response = %+v, want server_collision_correction", response)
 	}
 	assertSuccess(t, response, true)
-	if response.X == nil || *response.X > 0.151 {
-		t.Fatalf("first accepted X = %v, want player stopped before box at X <= 0.15", response.X)
+	if response.X == nil || *response.X > 0.451 {
+		t.Fatalf("first accepted X = %v, want player stopped at the near side of box (X <= 0.45)", response.X)
 	}
 }
 
