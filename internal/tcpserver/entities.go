@@ -428,6 +428,11 @@ func (s *Server) simulateMonsterFall(deltaSeconds float64) {
 			changedMonsters = append(changedMonsters, monster)
 		}
 	}
+	s.entitiesMu.Unlock()
+
+	for _, monster := range changedMonsters {
+		s.broadcastMonsterStateUpdated(monster, time.Now())
+	}
 }
 
 // AddGroundItem adds or replaces an item lying on the ground.
