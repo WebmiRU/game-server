@@ -62,14 +62,41 @@ func (s *Server) PlayerAttackSpeed(playerID string) float64 {
 	return attackSpeed
 }
 
-// handleAttack validates one strike against the target already selected on the server.
-// The client does not send a target ID here: set_target owns selection, and this command
-// always acts on the server's current target. Damage and hit direction are server-authoritative.
+// resolveAttackTarget resolves the target of an active attack command independently from
+// the player's current selection. This lets set_target change the UI target without silently
+// retargeting an attack already in progress. The server still resolves only live entities.
+func (s *Server) resolveAttackTarget(playerID string, req request) (*TargetReference, string) {
+	targetType := strings.ToLower(strings.TrimSpace(req.TargetType))
+	targetID := strings.TrimSpace(req.TargetID)
+	if targetType == "" && targetID == "" {
+		// Keep compatibility with target-less callers: use the server-selected target.
+		target := s.currentPlayerTarget(playerID)
+		if target == nil {
+			return nil, "target_not_selected"
+		}
+		return target, ""
+	}
+	if targetType == "" || targetID == "" {
+		return nil, "invalid_target_reference"
+	}
+
+	s.targetsMu.Lock()
+	target, exists := s.resolveTargetLocked(playerID, targetType, targetID)
+	s.targetsMu.Unlock()
+	if !exists {
+		return nil, "target_not_found"
+	}
+	return &target, ""
+}
+
+// handleAttack validates one strike against the target of the active command.
+// Selection is independent from commands; target existence, range, cooldown, and damage
+// remain server-authoritative.
 func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error {
-	target := s.currentPlayerTarget(playerID)
+	target, targetError := s.resolveAttackTarget(playerID, req)
 	if target == nil {
 		return s.writeAttackResult(conn, playerID, req.RequestID, false,
-			"target_not_selected", nil, 0)
+			targetError, nil, 0)
 	}
 
 	// Only entities with implemented combat reach can be attacked in this step.
