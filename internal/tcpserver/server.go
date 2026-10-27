@@ -33,12 +33,18 @@ var developmentCredentials = map[string]string{
 	"player3": "player3",
 }
 
+// defaultSpawnPoint is a point on the Unity Terrain surface, not the character capsule root.
+var defaultSpawnPoint = worldmap.Vec3{X: 539.56, Y: 74.17, Z: 555.99}
+
 // Config configures the TCP game server.
 type Config struct {
 	Address         string
 	World           *worldmap.Map
 	Logger          *log.Logger
 	MaxMessageBytes int
+	// SpawnPoint is the initial world-surface position sent after successful authentication.
+	// If nil, the development spawn point is used.
+	SpawnPoint *worldmap.Vec3
 }
 
 // Server accepts TCP clients, authenticates them, and exposes read-only world queries.
@@ -47,6 +53,7 @@ type Server struct {
 	world           *worldmap.Map
 	logger          *log.Logger
 	maxMessageBytes int
+	spawnPoint      worldmap.Vec3
 
 	connectionsMu sync.Mutex
 	connections   map[net.Conn]struct{}
@@ -71,11 +78,17 @@ func New(config Config) *Server {
 		maxMessageBytes = defaultMaxLine
 	}
 
+	spawnPoint := defaultSpawnPoint
+	if config.SpawnPoint != nil {
+		spawnPoint = *config.SpawnPoint
+	}
+
 	return &Server{
 		address:         address,
 		world:           config.World,
 		logger:          logger,
 		maxMessageBytes: maxMessageBytes,
+		spawnPoint:      spawnPoint,
 		connections:     make(map[net.Conn]struct{}),
 	}
 }
@@ -96,6 +109,9 @@ type response struct {
 	PlayerID        string            `json:"playerId,omitempty"`
 	World           *worldmap.Summary `json:"world,omitempty"`
 	Height          *float64          `json:"height,omitempty"`
+	X               *float64          `json:"x,omitempty"`
+	Y               *float64          `json:"y,omitempty"`
+	Z               *float64          `json:"z,omitempty"`
 }
 
 // ListenAndServe starts the TCP listener and exits when ctx is cancelled or the listener fails.
@@ -298,6 +314,16 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}); err != nil {
 				return
 			}
+			if err := s.writeResponse(conn, response{
+				Type:    "spawn",
+				Success: boolPointer(true),
+				X:       float64Pointer(s.spawnPoint.X),
+				Y:       float64Pointer(s.spawnPoint.Y),
+				Z:       float64Pointer(s.spawnPoint.Z),
+			}); err != nil {
+				return
+			}
+
 			s.logger.Printf("TCP authentication succeeded: username=%q remote=%s", username, conn.RemoteAddr())
 			continue
 		}
@@ -403,6 +429,10 @@ func authenticate(username, password string) bool {
 }
 
 func boolPointer(value bool) *bool {
+	return &value
+}
+
+func float64Pointer(value float64) *float64 {
 	return &value
 }
 
