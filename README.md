@@ -16,7 +16,7 @@ Place these two Unity exporter files directly in `game-server/data/`:
 - `manifest.json`
 - `terrain.u16`
 
-Then run the project normally from GoLand. No map path or map-related run arguments are required. If the map is missing or invalid, the server exits with an error rather than starting without a world.
+Then run the project normally from GoLand. No map path or map-related run arguments are required. If the map is missing or invalid, the error is printed in red and the TCP server still starts for authentication. World queries remain unavailable until a valid map is loaded at startup.
 
 The TCP listen address defaults to `:7777`; it can be changed with `-addr` or `GAME_SERVER_ADDR`.
 
