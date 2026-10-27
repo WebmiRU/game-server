@@ -4,7 +4,7 @@ Minimal Go TCP server for the Unity MMO prototype.
 
 ## Requirements
 
-- Go 1.23 or newer (standard library only).
+- The Go version declared in `go.mod` (standard library only).
 - A Unity Terrain export in the GWM v1 format to enable world queries.
 
 ## Run
@@ -86,4 +86,4 @@ Before authentication, non-auth messages receive `authentication_required`. Inva
 
 ## GWM v1 format
 
-See [GWM_FORMAT.md](../game-client/GWM_FORMAT.md) in the Unity client repository for the export format definition. The server interprets each sample as an unsigned 16-bit little-endian normalized height and uses the manifest's origin and size to convert it to world coordinates.
+See [GWM_FORMAT.md](https://github.com/WebmiRU/game-client/blob/master/GWM_FORMAT.md) in the Unity client repository for the export format definition. The server interprets each sample as an unsigned 16-bit little-endian normalized height and uses the manifest's origin and size to convert it to world coordinates.
