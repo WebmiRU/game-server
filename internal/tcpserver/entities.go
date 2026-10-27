@@ -38,10 +38,12 @@ type ColliderDefinition struct {
 
 // NearbyPlayer is the compact representation sent to clients for another active player.
 type NearbyPlayer struct {
-	PlayerID string              `json:"playerId"`
-	Position worldmap.Vec3       `json:"position"`
-	Rotation PlayerRotation      `json:"rotation"`
-	Collider ColliderDefinition  `json:"collider"`
+	PlayerID  string              `json:"playerId"`
+	Position  worldmap.Vec3       `json:"position"`
+	Rotation  PlayerRotation      `json:"rotation"`
+	Health    int                 `json:"health"`
+	MaxHealth int                 `json:"maxHealth"`
+	Collider  ColliderDefinition  `json:"collider"`
 }
 
 // MonsterState is a server-owned monster entry. AIState is "idle" for the current
