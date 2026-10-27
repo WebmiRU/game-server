@@ -482,6 +482,58 @@ func TestSavedPlayerHeightReconcilesAfterTerrainHeightmapChanges(t *testing.T) {
 	}
 }
 
+func TestReconnectPushesSavedPlayerBackUntilMonsterCollisionIsGone(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	savedPosition := worldmap.Vec3{X: 100, Y: 0, Z: 100}
+	savedRotation := PlayerRotation{W: 1} // faces +Z; recovery must move backwards toward -Z
+	savedState := PlayerState{
+		PlayerID:  "player1",
+		Position:  savedPosition,
+		Rotation:  savedRotation,
+		UpdatedAt: time.Now().UTC(),
+		Online:    true,
+	}
+	server.playerStates["player1"] = savedState
+	server.playerSessions["player1"] = nil
+
+	// Simulate a monster spawning after the player logged out, at the saved position.
+	if !server.UpsertMonster(MonsterState{
+		ID: "2", TemplateID: "test-sphere-enemy", Name: "Enemy 2",
+		Position: savedPosition, Rotation: PlayerRotation{W: 1},
+		Health: 100, MaxHealth: 100, Alive: true, Action: "idle",
+	}) {
+		t.Fatal("failed to add overlapping monster")
+	}
+
+	spawn := server.spawnResponseForPlayer("player1")
+	if spawn.Type != "spawn" || spawn.Success == nil || !*spawn.Success {
+		t.Fatalf("reconnect spawn failed: %+v", spawn)
+	}
+	if spawn.Message != "restored_saved_state_collision_recovered" {
+		t.Fatalf("spawn message = %q, want restored_saved_state_collision_recovered", spawn.Message)
+	}
+	if !spawn.PositionIsRoot || spawn.X == nil || spawn.Y == nil || spawn.Z == nil {
+		t.Fatalf("recovered spawn must include exact character-root coordinates: %+v", spawn)
+	}
+
+	resolved := worldmap.Vec3{X: *spawn.X, Y: *spawn.Y, Z: *spawn.Z}
+	if !(*spawn.Z < savedPosition.Z) {
+		t.Fatalf("player was not moved backwards from facing +Z: old Z=%.3f new Z=%.3f",
+			savedPosition.Z, *spawn.Z)
+	}
+	if server.playerPositionCollides("player1", resolved) {
+		t.Fatalf("reconnected player still intersects the monster at %+v", resolved)
+	}
+
+	stored := server.playerStates["player1"]
+	if math.Abs(stored.Position.X-resolved.X) > 1e-9 ||
+		math.Abs(stored.Position.Y-resolved.Y) > 1e-9 ||
+		math.Abs(stored.Position.Z-resolved.Z) > 1e-9 {
+		t.Fatalf("persisted player position %+v differs from collision-free spawn %+v",
+			stored.Position, resolved)
+	}
+}
+
 func TestWorldInterestReturnsOnlyNearbyEntitiesAndClampsRange(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 
