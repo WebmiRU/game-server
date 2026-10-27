@@ -97,6 +97,7 @@ type Server struct {
 	// and debuffs can change it without persisting temporary modifiers to disk.
 	combatStatsMu sync.RWMutex
 	attackSpeeds  map[string]float64
+	lastAttackAt  map[string]time.Time
 
 	stateSaveMu sync.Mutex
 	stateLogMu  sync.Mutex
@@ -154,6 +155,7 @@ func New(config Config) *Server {
 		groundItems:       make(map[string]GroundItemState),
 		playerTargets:     make(map[string]TargetReference),
 		attackSpeeds:      make(map[string]float64),
+		lastAttackAt:      make(map[string]time.Time),
 		connections:       make(map[net.Conn]struct{}),
 	}
 	server.seedTestMonsters()
@@ -176,6 +178,7 @@ type request struct {
 	MoveTargetZ      float64 `json:"moveTargetZ,omitempty"`
 	TargetType       string  `json:"targetType,omitempty"`
 	TargetID         string  `json:"targetId,omitempty"`
+	RequestID        int     `json:"requestId,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
 	RotationZ *float64 `json:"rotationZ,omitempty"`
@@ -230,6 +233,9 @@ type response struct {
 	PositionIsRoot  bool               `json:"positionIsRoot,omitempty"`
 	VisibilityRange *float64           `json:"visibilityRange,omitempty"`
 	Target          *TargetReference    `json:"target,omitempty"`
+	AttackSpeed     float64             `json:"attackSpeed,omitempty"`
+	RetryAfter      float64             `json:"retryAfter,omitempty"`
+	RequestID       int                 `json:"requestId,omitempty"`
 	Players         []NearbyPlayer      `json:"players,omitempty"`
 	Monsters        []MonsterState      `json:"monsters,omitempty"`
 	Items           []GroundItemState   `json:"items,omitempty"`
@@ -397,6 +403,7 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 
 	s.combatStatsMu.Lock()
 	delete(s.attackSpeeds, playerID)
+	delete(s.lastAttackAt, playerID)
 	s.combatStatsMu.Unlock()
 }
 
@@ -952,6 +959,9 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req 
 
 	case "set_target":
 		return s.handleSetTarget(conn, playerID, req)
+
+	case "attack":
+		return s.handleAttack(conn, playerID, req)
 
 	case "height_at":
 		if req.X == nil || req.Z == nil {
