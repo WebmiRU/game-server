@@ -88,9 +88,9 @@ type Server struct {
 	stateVersion   uint64
 	savedVersion   uint64
 
-	// Async world events and normal request responses share the same TCP stream.
-	// Serialize writes so concurrent producers cannot interleave JSON lines.
-	writeMu sync.Mutex
+	// Serialize writes per TCP connection without blocking unrelated clients.
+	writeLocksMu sync.Mutex
+	writeLocks   map[net.Conn]*connectionWriteLock
 
 	entitiesMu             sync.RWMutex
 	monsters               map[string]MonsterState
@@ -115,6 +115,11 @@ type Server struct {
 	connections   map[net.Conn]struct{}
 	shuttingDown  bool
 	handlers      sync.WaitGroup
+}
+
+type connectionWriteLock struct {
+	mutex      sync.Mutex
+	references int
 }
 
 // New creates a TCP server with safe defaults for the configured address and logger.
@@ -160,6 +165,7 @@ func New(config Config) *Server {
 		playerStates:        make(map[string]PlayerState),
 		playerSessions:      make(map[string]net.Conn),
 		worldInterestRanges: make(map[string]float64),
+		writeLocks:           make(map[net.Conn]*connectionWriteLock),
 		monsters:               make(map[string]MonsterState),
 		monsterSpawnPoints:     make(map[string]MonsterSpawnPoint),
 		monsterSpawnIDByEntity: make(map[string]string),
@@ -1449,8 +1455,8 @@ func finiteNumber(value float64) bool {
 }
 
 func (s *Server) writeResponse(conn net.Conn, value response) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	writeLock := s.acquireConnectionWriteLock(conn)
+	defer s.releaseConnectionWriteLock(conn, writeLock)
 
 	if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return err
@@ -1462,6 +1468,31 @@ func (s *Server) writeResponse(conn net.Conn, value response) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) acquireConnectionWriteLock(conn net.Conn) *connectionWriteLock {
+	s.writeLocksMu.Lock()
+	writeLock := s.writeLocks[conn]
+	if writeLock == nil {
+		writeLock = &connectionWriteLock{}
+		s.writeLocks[conn] = writeLock
+	}
+	writeLock.references++
+	s.writeLocksMu.Unlock()
+
+	writeLock.mutex.Lock()
+	return writeLock
+}
+
+func (s *Server) releaseConnectionWriteLock(conn net.Conn, writeLock *connectionWriteLock) {
+	writeLock.mutex.Unlock()
+
+	s.writeLocksMu.Lock()
+	writeLock.references--
+	if writeLock.references == 0 && s.writeLocks[conn] == writeLock {
+		delete(s.writeLocks, conn)
+	}
+	s.writeLocksMu.Unlock()
 }
 
 func authenticate(username, password string) bool {
