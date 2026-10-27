@@ -42,6 +42,7 @@ type wireResponse struct {
 	Target          *TargetReference    `json:"target"`
 	Players         []NearbyPlayer      `json:"players"`
 	Monsters        []MonsterState      `json:"monsters"`
+	Monster         *MonsterState       `json:"monster"`
 	Items           []GroundItemState   `json:"items"`
 }
 
@@ -723,6 +724,52 @@ func TestPlayerAttackSpeedDefaultsAndCanChange(t *testing.T) {
 }
 
 
+func TestMonsterHealthDefaultsByTemplate(t *testing.T) {
+	if got := defaultMonsterMaxHealth("test-sphere-enemy"); got != 50 {
+		t.Fatalf("sphere max health = %d, want 50", got)
+	}
+	if got := defaultMonsterMaxHealth("test-cube-enemy"); got != 100 {
+		t.Fatalf("cube max health = %d, want 100", got)
+	}
+}
+
+func TestApplyMonsterDamageMarksDeathAndRetainsCorpse(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	if !server.UpsertMonster(MonsterState{
+		ID: "sphere", TemplateID: "test-sphere-enemy", Name: "Sphere",
+		Position: worldmap.Vec3{X: 10, Y: 50, Z: 10}, Health: 50, MaxHealth: 50, Alive: true,
+	}) {
+		t.Fatal("failed to add sphere")
+	}
+	for hit := 0; hit < 4; hit++ {
+		monster, ok := server.applyMonsterDamage("sphere", MeleeAttackDamage)
+		if !ok || monster.Health != 50-(hit+1)*MeleeAttackDamage || !monster.Alive {
+			t.Fatalf("hit %d state = %+v, ok=%v", hit+1, monster, ok)
+		}
+	}
+	dead, ok := server.applyMonsterDamage("sphere", MeleeAttackDamage)
+	if !ok || dead.Health != 0 || dead.Alive || dead.Action != "dead" || dead.deathAt.IsZero() {
+		t.Fatalf("death state = %+v, ok=%v", dead, ok)
+	}
+	if _, ok := server.applyMonsterDamage("sphere", MeleeAttackDamage); ok {
+		t.Fatal("damage should not be applied to an already-dead monster")
+	}
+	server.pruneExpiredMonsterCorpses(dead.deathAt.Add(MonsterCorpseRetention - time.Millisecond))
+	server.entitiesMu.RLock()
+	_, remainsBeforeExpiry := server.monsters["sphere"]
+	server.entitiesMu.RUnlock()
+	if !remainsBeforeExpiry {
+		t.Fatal("corpse removed before its retention period expired")
+	}
+	server.pruneExpiredMonsterCorpses(dead.deathAt.Add(MonsterCorpseRetention + time.Millisecond))
+	server.entitiesMu.RLock()
+	_, remainsAfterExpiry := server.monsters["sphere"]
+	server.entitiesMu.RUnlock()
+	if remainsAfterExpiry {
+		t.Fatal("corpse was not removed after its retention period expired")
+	}
+}
+
 func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 	if !server.UpsertMonster(MonsterState{
@@ -793,6 +840,10 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 	}
 	if math.Abs(attackResponse.AttackSpeed-2.0) > 0.0001 {
 		t.Fatalf("attack speed = %.3f, want 2.0", attackResponse.AttackSpeed)
+	}
+	if attackResponse.Monster == nil || attackResponse.Monster.Health != 90 ||
+		attackResponse.Monster.MaxHealth != 100 || !attackResponse.Monster.Alive {
+		t.Fatalf("attack monster state = %+v, want 90/100 HP and alive", attackResponse.Monster)
 	}
 
 	// A second attack within the server-controlled interval is rejected.
