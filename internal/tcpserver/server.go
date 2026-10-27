@@ -857,9 +857,18 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 		}
 	}
 
+	requestedPosition := worldmap.Vec3{X: x, Y: y, Z: z}
+	acceptedPosition := requestedPosition
+	previousState, alreadyKnown := s.storedPlayerState(playerID)
+	if alreadyKnown {
+		// The previous server-accepted transform is the start of the swept move.
+		// Never resolve from an untrusted client-provided "previous position".
+		acceptedPosition = s.resolvePlayerMovement(playerID, previousState.Position, requestedPosition)
+	}
+
 	state := PlayerState{
 		PlayerID: playerID,
-		Position: worldmap.Vec3{X: x, Y: y, Z: z},
+		Position: acceptedPosition,
 		Rotation: PlayerRotation{
 			X: qx / quaternionLength,
 			Y: qy / quaternionLength,
@@ -871,15 +880,33 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 	}
 
 	s.playersMu.Lock()
-	_, alreadyKnown := s.playerStates[playerID]
 	s.playerStates[playerID] = state
 	s.stateVersion++
 	s.playersMu.Unlock()
 
 	s.logPlayerState(state)
 
+	positionCorrected := math.Abs(acceptedPosition.X-requestedPosition.X) > 0.01 ||
+		math.Abs(acceptedPosition.Y-requestedPosition.Y) > 0.01 ||
+		math.Abs(acceptedPosition.Z-requestedPosition.Z) > 0.01
+	if positionCorrected {
+		return s.writeResponse(conn, response{
+			Type:       "player_state_result",
+			Success:    boolPointer(true),
+			Message:    "server_collision_correction",
+			PlayerID:   playerID,
+			X:          float64Pointer(acceptedPosition.X),
+			Y:          float64Pointer(acceptedPosition.Y),
+			Z:          float64Pointer(acceptedPosition.Z),
+			RotationX:  float64Pointer(state.Rotation.X),
+			RotationY:  float64Pointer(state.Rotation.Y),
+			RotationZ:  float64Pointer(state.Rotation.Z),
+			RotationW:  float64Pointer(state.Rotation.W),
+		})
+	}
+
 	// Acknowledge only the first transform from a player without an existing state.
-	// A reply for every tick would double steady-state network traffic.
+	// Corrected transforms are also returned immediately when a collision blocks movement.
 	if !alreadyKnown {
 		return s.writeResponse(conn, response{
 			Type:     "player_state_result",
