@@ -234,6 +234,24 @@ func TestAuthenticatedWorldInfoAndHeightQuery(t *testing.T) {
 	}
 }
 
+func TestDuplicatePlayerSessionIsRejected(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	firstConn, firstScanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, firstConn, firstScanner)
+
+	secondConn, secondScanner, _ := startPipeConnectionWithServer(t, server)
+	sendRequest(t, secondConn, testRequest{
+		Type:     "auth",
+		Username: "player1",
+		Password: "player1",
+	})
+	response := readWireResponse(t, secondScanner)
+	if response.Type != "auth_result" || response.Message != "already_logged_in" {
+		t.Fatalf("unexpected duplicate login response: %+v", response)
+	}
+	assertSuccess(t, response, false)
+}
+
 func TestPlayerStateStoresPositionAndFullRotation(t *testing.T) {
 	world := createTestWorldMap(t)
 	server := New(Config{
