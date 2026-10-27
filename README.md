@@ -5,44 +5,27 @@ Minimal Go TCP server for the Unity MMO prototype.
 ## Requirements
 
 - The Go version declared in `go.mod` (standard library only).
-- A Unity Terrain export in the GWM v1 format to enable world queries.
+- The Unity Terrain export in GWM v1 format.
 
 ## Run
 
-Start the server from the repository root:
+The server has one fixed map location: the `data` directory beside `main.go` in the `game-server` project. The location is resolved from the compiled source path, so it does not depend on GoLand's Working directory or the temporary location of the generated executable.
 
-```sh
-go test ./...
-go run . -addr :7777
-```
+Place these two Unity exporter files directly in `game-server/data/`:
 
-The default listen address is `:7777`. Override it with `-addr` or `GAME_SERVER_ADDR`.
+- `manifest.json`
+- `terrain.u16`
 
-The server attempts to load a map from `data` by default. If no export is present, it logs a warning and still starts so TCP authentication can be tested. To require a valid map at startup:
+Then run the project normally from GoLand. No map path or map-related run arguments are required. If the map is missing or invalid, the server exits with an error rather than starting without a world.
 
-```sh
-go run . -addr :7777 -map-dir data -require-map
-```
+The TCP listen address defaults to `:7777`; it can be changed with `-addr` or `GAME_SERVER_ADDR`.
 
-The map directory must contain the Unity exporter outputs `manifest.json` and `terrain.u16`. Override the path with `-map-dir` or `GAME_WORLD_DIR`. A corrupt or incompatible map is rejected.
-
-## Export and install a world map
+## Export the world map
 
 1. In the Unity client, open the scene containing the Terrain.
 2. Run **Tools → Game Client → Export World for Go Server**.
-3. Copy the resulting `manifest.json` and `terrain.u16` from `WorldExport/<scene>/<terrain>/` into this repository's `data/` directory.
-4. Run with `-require-map` so startup fails immediately if the map cannot be loaded.
-
-For example, from the game-server repository root on Windows PowerShell, assuming `game-client` and `game-server` are sibling folders:
-
-```powershell
-New-Item -ItemType Directory -Force data
-Copy-Item ..\game-client\WorldExport\SampleScene\Terrain\manifest.json data\
-Copy-Item ..\game-client\WorldExport\SampleScene\Terrain\terrain.u16 data\
-go run . -addr :7777 -map-dir data -require-map
-```
-
-Change `SampleScene\Terrain` if Unity exported under a different scene or Terrain name.
+3. Unity exports to `WorldExport/<scene>/<terrain>/`.
+4. Copy `manifest.json` and `terrain.u16` from that export directly into this project's `data/` directory.
 
 The loader validates the GWM version, dimensions, byte length, SHA-256 checksum, sample range, and metadata before exposing the heightmap. It also supports a bilinear world-height query.
 
@@ -80,7 +63,7 @@ After authentication the prototype supports:
 - World metadata: `{"type":"world_info"}`
 - Surface height: `{"type":"height_at","x":100,"z":200}`
 
-Coordinates in `height_at` are Unity **world X/Z coordinates**. Height results are world-space Y values. A query outside the terrain returns `coordinates_outside_world`. If no map is loaded, world queries return `world_map_not_loaded`.
+Coordinates in `height_at` are Unity **world X/Z coordinates**. Height results are world-space Y values. A query outside the terrain returns `coordinates_outside_world`.
 
 Before authentication, non-auth messages receive `authentication_required`. Invalid credentials are rejected; a connection is closed after five failed login attempts. Messages over 4096 bytes are rejected.
 
