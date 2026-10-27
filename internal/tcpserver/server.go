@@ -238,6 +238,7 @@ type response struct {
 	RequestID       int                 `json:"requestId,omitempty"`
 	Players         []NearbyPlayer      `json:"players,omitempty"`
 	Monsters        []MonsterState      `json:"monsters,omitempty"`
+	Monster         *MonsterState       `json:"monster,omitempty"`
 	Items           []GroundItemState   `json:"items,omitempty"`
 }
 
