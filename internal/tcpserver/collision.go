@@ -164,6 +164,76 @@ func (s *Server) resolvePlayerMovement(playerID string, from, requested worldmap
 // findNearbyFreePosition recovers an entity that begins inside a collider. It searches
 // concentric rings around the old position and returns the closest sampled free point.
 // Terrain height is recalculated for every candidate so recovery does not float above slopes.
+
+const spawnRecoveryStep = 0.1
+const maxSpawnRecoveryDistance = 50.0
+
+// recoverSpawnOverlap moves a reconnecting player backwards from its persisted facing
+// direction until its cylinder no longer overlaps any active player or live monster.
+// It also reconciles Y to the server heightmap, because player movement is grounded.
+func (s *Server) recoverSpawnOverlap(
+	playerID string,
+	position worldmap.Vec3,
+	rotation PlayerRotation,
+) (worldmap.Vec3, bool) {
+	original := position
+	groundPosition := func(candidate worldmap.Vec3) worldmap.Vec3 {
+		if s.world != nil {
+			if terrainY, ok := s.world.HeightAtWorld(candidate.X, candidate.Z); ok {
+				candidate.Y = terrainY + 0.05
+			}
+		}
+		return candidate
+	}
+	position = groundPosition(position)
+	changed := math.Abs(position.Y-original.Y) > 0.001 ||
+		math.Abs(position.X-original.X) > 0.001 ||
+		math.Abs(position.Z-original.Z) > 0.001
+
+	if !s.playerPositionCollides(playerID, position) {
+		return position, changed
+	}
+
+	// Project the character's forward vector onto the horizontal plane and search
+	// directly behind it. Identity rotation faces +Z, so "back" is toward -Z.
+	forwardX := 2 * (rotation.X*rotation.Z + rotation.Y*rotation.W)
+	forwardZ := 1 - 2*(rotation.X*rotation.X+rotation.Y*rotation.Y)
+	forwardLength := math.Hypot(forwardX, forwardZ)
+	if forwardLength < 1e-6 || math.IsNaN(forwardLength) || math.IsInf(forwardLength, 0) {
+		forwardX, forwardZ, forwardLength = 0, 1, 1
+	}
+	backX := -forwardX / forwardLength
+	backZ := -forwardZ / forwardLength
+
+	for distance := spawnRecoveryStep; distance <= maxSpawnRecoveryDistance+collisionEpsilon; distance += spawnRecoveryStep {
+		candidate := groundPosition(worldmap.Vec3{
+			X: position.X + backX*distance,
+			Y: position.Y,
+			Z: position.Z + backZ*distance,
+		})
+		if s.world != nil {
+			if _, insideWorld := s.world.HeightAtWorld(candidate.X, candidate.Z); !insideWorld {
+				// The backwards path reached the edge of the map. Try a nearby free
+				// point in another direction rather than placing the player out of bounds.
+				break
+			}
+		}
+
+		if !s.playerPositionCollides(playerID, candidate) {
+			return candidate, true
+		}
+	}
+
+	// If the direction behind the player is blocked or leaves the world, fall back
+	// to a bounded radial search. Never silently commit a colliding spawn if a free
+	// location can be found nearby.
+	if candidate, ok := s.findNearbyFreePosition(playerID, position, groundPosition); ok {
+		return candidate, true
+	}
+
+	return position, changed
+}
+
 func (s *Server) findNearbyFreePosition(
 	playerID string,
 	origin worldmap.Vec3,
