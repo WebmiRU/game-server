@@ -26,6 +26,9 @@ type wireResponse struct {
 	PlayerID        string             `json:"playerId"`
 	World           *worldmap.Summary  `json:"world"`
 	Height          *float64           `json:"height"`
+	X               *float64           `json:"x"`
+	Y               *float64           `json:"y"`
+	Z               *float64           `json:"z"`
 }
 
 type testRequest struct {
@@ -87,6 +90,21 @@ func assertSuccess(t *testing.T, response wireResponse, want bool) {
 	}
 }
 
+func assertSpawnResponse(t *testing.T, response wireResponse) {
+	t.Helper()
+	if response.Type != "spawn" {
+		t.Fatalf("spawn response type = %q, want spawn", response.Type)
+	}
+	assertSuccess(t, response, true)
+	if response.X == nil || response.Y == nil || response.Z == nil {
+		t.Fatalf("spawn coordinates missing: %+v", response)
+	}
+	if *response.X != 539.56 || *response.Y != 74.17 || *response.Z != 555.99 {
+		t.Fatalf("spawn coordinates = (%.2f, %.2f, %.2f), want (539.56, 74.17, 555.99)",
+			*response.X, *response.Y, *response.Z)
+	}
+}
+
 func TestAllDevelopmentPlayersCanAuthenticateAndPing(t *testing.T) {
 	players := []string{"player1", "player2", "player3"}
 
@@ -111,6 +129,7 @@ func TestAllDevelopmentPlayersCanAuthenticateAndPing(t *testing.T) {
 				t.Fatalf("protocolVersion = %d, want %d", authResponse.ProtocolVersion, ProtocolVersion)
 			}
 
+			assertSpawnResponse(t, readWireResponse(t, scanner))
 			sendRequest(t, conn, testRequest{Type: "ping"})
 			pingResponse := readWireResponse(t, scanner)
 			if pingResponse.Type != "pong" {
@@ -163,7 +182,9 @@ func TestAuthenticatedWorldInfoAndHeightQuery(t *testing.T) {
 		Username: "player1",
 		Password: "player1",
 	})
-	assertSuccess(t, readWireResponse(t, scanner), true)
+	authResponse := readWireResponse(t, scanner)
+	assertSuccess(t, authResponse, true)
+	assertSpawnResponse(t, readWireResponse(t, scanner))
 
 	sendRequest(t, conn, testRequest{Type: "world_info"})
 	worldResponse := readWireResponse(t, scanner)
