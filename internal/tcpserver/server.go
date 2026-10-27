@@ -782,38 +782,13 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req 
 }
 
 func (s *Server) handleWorldInterest(conn net.Conn, playerID string, req request) error {
-	if req.X == nil || req.Y == nil || req.Z == nil {
+	state, ok := s.storedPlayerState(playerID)
+	if !ok || !state.Online {
 		return s.writeResponse(conn, response{
 			Type:    "world_snapshot",
 			Success: boolPointer(false),
-			Message: "position_required",
+			Message: "player_state_unavailable",
 		})
-	}
-
-	center := worldmap.Vec3{X: *req.X, Y: *req.Y, Z: *req.Z}
-	if !finiteNumber(center.X) || !finiteNumber(center.Y) || !finiteNumber(center.Z) {
-		return s.writeResponse(conn, response{
-			Type:    "world_snapshot",
-			Success: boolPointer(false),
-			Message: "non_finite_position",
-		})
-	}
-	if s.world != nil {
-		if _, insideWorld := s.world.HeightAtWorld(center.X, center.Z); !insideWorld {
-			return s.writeResponse(conn, response{
-				Type:    "world_snapshot",
-				Success: boolPointer(false),
-				Message: "coordinates_outside_world",
-			})
-		}
-		world := s.world.Summary()
-		if center.Y < world.Origin.Y-5 || center.Y > world.Origin.Y+world.Size.Y+5 {
-			return s.writeResponse(conn, response{
-				Type:    "world_snapshot",
-				Success: boolPointer(false),
-				Message: "height_outside_world",
-			})
-		}
 	}
 
 	radius := DefaultVisibilityRange
@@ -821,7 +796,7 @@ func (s *Server) handleWorldInterest(conn net.Conn, playerID string, req request
 		radius = *req.VisibilityRange
 	}
 	radius = clampVisibilityRange(radius)
-	players, monsters, items := s.worldSnapshot(playerID, center, radius)
+	players, monsters, items := s.worldSnapshot(playerID, state.Position, radius)
 	return s.writeResponse(conn, response{
 		Type:            "world_snapshot",
 		Success:         boolPointer(true),
