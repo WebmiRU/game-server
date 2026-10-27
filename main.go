@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"syscall"
 
+	"game-server/internal/logging"
 	"game-server/internal/tcpserver"
 	"game-server/internal/worldmap"
 )
@@ -24,12 +25,12 @@ func main() {
 
 	mapDir, err := fixedWorldMapDirectory()
 	if err != nil {
-		log.Fatal(err)
+		fatalErrorf("resolve fixed world map directory: %v", err)
 	}
 
 	loadedWorld, err := worldmap.LoadDir(mapDir)
 	if err != nil {
-		log.Fatalf("load world map from fixed project data directory %q: %v", mapDir, err)
+		fatalErrorf("load world map from fixed project data directory %q: %v", mapDir, err)
 	}
 	log.Printf("world map loaded from %q", mapDir)
 
@@ -43,9 +44,15 @@ func main() {
 	})
 
 	log.Printf("starting game server (protocol v%d)", tcpserver.ProtocolVersion)
+	// ListenAndServe blocks here and keeps the process alive until shutdown or a real listener error.
 	if err := server.ListenAndServe(ctx); err != nil {
-		log.Fatalf("game server stopped with error: %v", err)
+		fatalErrorf("game server stopped with error: %v", err)
 	}
+}
+
+func fatalErrorf(format string, args ...any) {
+	logging.Errorf(log.Default(), format, args...)
+	os.Exit(1)
 }
 
 // fixedWorldMapDirectory always resolves to data/ beside this project's main.go.
