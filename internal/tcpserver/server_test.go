@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -32,11 +33,16 @@ type wireResponse struct {
 }
 
 type testRequest struct {
-	Type     string   `json:"type"`
-	Username string   `json:"username,omitempty"`
-	Password string   `json:"password,omitempty"`
-	X        *float64 `json:"x,omitempty"`
-	Z        *float64 `json:"z,omitempty"`
+	Type      string   `json:"type"`
+	Username  string   `json:"username,omitempty"`
+	Password  string   `json:"password,omitempty"`
+	X         *float64 `json:"x,omitempty"`
+	Y         *float64 `json:"y,omitempty"`
+	Z         *float64 `json:"z,omitempty"`
+	RotationX *float64 `json:"rotationX,omitempty"`
+	RotationY *float64 `json:"rotationY,omitempty"`
+	RotationZ *float64 `json:"rotationZ,omitempty"`
+	RotationW *float64 `json:"rotationW,omitempty"`
 }
 
 func startPipeConnection(t *testing.T) (net.Conn, *bufio.Scanner, chan struct{}) {
@@ -88,6 +94,25 @@ func assertSuccess(t *testing.T, response wireResponse, want bool) {
 	if response.Success == nil || *response.Success != want {
 		t.Fatalf("response success = %v, want %v (response: %+v)", response.Success, want, response)
 	}
+}
+
+func float64PointerForTest(value float64) *float64 {
+	return &value
+}
+
+func authenticateTestPlayer(t *testing.T, conn net.Conn, scanner *bufio.Scanner) {
+	t.Helper()
+	sendRequest(t, conn, testRequest{Type: "auth", Username: "player1", Password: "player1"})
+	authResponse := readWireResponse(t, scanner)
+	if authResponse.Type != "auth_result" {
+		t.Fatalf("auth response type = %q, want auth_result", authResponse.Type)
+	}
+	assertSuccess(t, authResponse, true)
+	spawnResponse := readWireResponse(t, scanner)
+	if spawnResponse.Type != "spawn" {
+		t.Fatalf("spawn response type = %q, want spawn", spawnResponse.Type)
+	}
+	assertSuccess(t, spawnResponse, true)
 }
 
 func assertSpawnResponse(t *testing.T, response wireResponse) {
@@ -206,6 +231,85 @@ func TestAuthenticatedWorldInfoAndHeightQuery(t *testing.T) {
 	want := ((0.0 + 65535.0 + 32768.0 + 16384.0) / 4.0 / 65535.0) * 100.0
 	if diff := *heightResponse.Height - want; diff < -1e-6 || diff > 1e-6 {
 		t.Fatalf("height = %.9f, want %.9f", *heightResponse.Height, want)
+	}
+}
+
+func TestPlayerStateStoresPositionAndFullRotation(t *testing.T) {
+	world := createTestWorldMap(t)
+	server := New(Config{
+		World:  world,
+		Logger: log.New(io.Discard, "", 0),
+	})
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+
+	sendRequest(t, conn, testRequest{
+		Type:      "player_state",
+		X:         float64PointerForTest(0.5),
+		Y:         float64PointerForTest(50),
+		Z:         float64PointerForTest(0.5),
+		RotationX: float64PointerForTest(0),
+		RotationY: float64PointerForTest(2),
+		RotationZ: float64PointerForTest(0),
+		RotationW: float64PointerForTest(2),
+	})
+
+	response := readWireResponse(t, scanner)
+	if response.Type != "player_state_result" || response.PlayerID != "player1" {
+		t.Fatalf("unexpected player state acknowledgement: %+v", response)
+	}
+	assertSuccess(t, response, true)
+	if response.Message != "state_registered" {
+		t.Fatalf("message = %q, want state_registered", response.Message)
+	}
+
+	states := server.PlayerStates()
+	if len(states) != 1 {
+		t.Fatalf("PlayerStates() has %d entries, want 1", len(states))
+	}
+	state := states[0]
+	if state.PlayerID != "player1" {
+		t.Fatalf("stored playerId = %q, want player1", state.PlayerID)
+	}
+	if state.Position.X != 0.5 || state.Position.Y != 50 || state.Position.Z != 0.5 {
+		t.Fatalf("stored position = %+v, want (0.5, 50, 0.5)", state.Position)
+	}
+	wantComponent := 1 / math.Sqrt(2)
+	if math.Abs(state.Rotation.Y-wantComponent) > 1e-9 ||
+		math.Abs(state.Rotation.W-wantComponent) > 1e-9 ||
+		state.Rotation.X != 0 || state.Rotation.Z != 0 {
+		t.Fatalf("stored normalized rotation = %+v, want normalized (0, 2, 0, 2)", state.Rotation)
+	}
+	if state.UpdatedAt.IsZero() {
+		t.Fatal("stored player state must include the server-side update timestamp")
+	}
+}
+
+func TestPlayerStateRejectsCoordinatesOutsideWorld(t *testing.T) {
+	server := New(Config{
+		World:  createTestWorldMap(t),
+		Logger: log.New(io.Discard, "", 0),
+	})
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+
+	sendRequest(t, conn, testRequest{
+		Type:      "player_state",
+		X:         float64PointerForTest(2),
+		Y:         float64PointerForTest(50),
+		Z:         float64PointerForTest(0.5),
+		RotationX: float64PointerForTest(0),
+		RotationY: float64PointerForTest(0),
+		RotationZ: float64PointerForTest(0),
+		RotationW: float64PointerForTest(1),
+	})
+	response := readWireResponse(t, scanner)
+	if response.Type != "player_state_result" || response.Message != "coordinates_outside_world" {
+		t.Fatalf("unexpected invalid transform response: %+v", response)
+	}
+	assertSuccess(t, response, false)
+	if states := server.PlayerStates(); len(states) != 0 {
+		t.Fatalf("invalid transform was stored: %+v", states)
 	}
 }
 
