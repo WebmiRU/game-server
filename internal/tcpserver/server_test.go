@@ -35,15 +35,20 @@ type wireResponse struct {
 	RotationZ       *float64           `json:"rotationZ"`
 	RotationW       *float64           `json:"rotationW"`
 	PositionIsRoot  bool               `json:"positionIsRoot"`
+	VisibilityRange *float64           `json:"visibilityRange"`
+	Players         []NearbyPlayer      `json:"players"`
+	Monsters        []MonsterState      `json:"monsters"`
+	Items           []GroundItemState   `json:"items"`
 }
 
 type testRequest struct {
-	Type      string   `json:"type"`
-	Username  string   `json:"username,omitempty"`
-	Password  string   `json:"password,omitempty"`
-	X         *float64 `json:"x,omitempty"`
-	Y         *float64 `json:"y,omitempty"`
-	Z         *float64 `json:"z,omitempty"`
+	Type            string   `json:"type"`
+	Username        string   `json:"username,omitempty"`
+	Password        string   `json:"password,omitempty"`
+	X               *float64 `json:"x,omitempty"`
+	Y               *float64 `json:"y,omitempty"`
+	Z               *float64 `json:"z,omitempty"`
+	VisibilityRange *float64 `json:"visibilityRange,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
 	RotationZ *float64 `json:"rotationZ,omitempty"`
@@ -427,6 +432,67 @@ func TestPlayerStatePersistsAndRestoresPositionAndRotation(t *testing.T) {
 		if math.Abs(gotRotation[i]-wantRotation[i]) > 1e-9 {
 			t.Fatalf("restored rotation component %d = %.12f, want %.12f", i, gotRotation[i], wantRotation[i])
 		}
+	}
+}
+
+func TestWorldInterestReturnsOnlyNearbyEntitiesAndClampsRange(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+
+	if !server.UpsertMonster(MonsterState{
+		ID: "monster-near", Name: "Nearby", Position: worldmap.Vec3{X: 20, Y: 50, Z: 0.5},
+		Health: 100, MaxHealth: 100, Alive: true, AIState: "idle",
+	}) {
+		t.Fatal("failed to add nearby monster")
+	}
+	if !server.UpsertMonster(MonsterState{
+		ID: "monster-far", Name: "Far away", Position: worldmap.Vec3{X: 100, Y: 50, Z: 0.5},
+		Health: 100, MaxHealth: 100, Alive: true, AIState: "idle",
+	}) {
+		t.Fatal("failed to add distant monster")
+	}
+	if !server.AddGroundItem(GroundItemState{
+		ID: "item-near", Name: "Nearby item", Position: worldmap.Vec3{X: 30, Y: 50, Z: 0.5}, Quantity: 1,
+	}) {
+		t.Fatal("failed to add nearby ground item")
+	}
+	if !server.AddGroundItem(GroundItemState{
+		ID: "item-far", Name: "Distant item", Position: worldmap.Vec3{X: 80, Y: 50, Z: 0.5}, Quantity: 1,
+	}) {
+		t.Fatal("failed to add distant ground item")
+	}
+
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+	sendRequest(t, conn, testRequest{
+		Type: "world_interest",
+		X: float64PointerForTest(0.5),
+		Y: float64PointerForTest(50),
+		Z: float64PointerForTest(0.5),
+		VisibilityRange: float64PointerForTest(20), // server enforces the minimum of 50
+	})
+
+	response := readWireResponse(t, scanner)
+	if response.Type != "world_snapshot" {
+		t.Fatalf("response type = %q, want world_snapshot", response.Type)
+	}
+	assertSuccess(t, response, true)
+	if response.VisibilityRange == nil || *response.VisibilityRange != MinVisibilityRange {
+		t.Fatalf("visibility range = %v, want clamped minimum %.0f", response.VisibilityRange, MinVisibilityRange)
+	}
+	if len(response.Monsters) != 1 || response.Monsters[0].ID != "monster-near" {
+		t.Fatalf("nearby monsters = %+v, want only monster-near", response.Monsters)
+	}
+	if len(response.Items) != 1 || response.Items[0].ID != "item-near" {
+		t.Fatalf("nearby items = %+v, want only item-near", response.Items)
+	}
+}
+
+func TestVisibilityRangeClampsToMaximum(t *testing.T) {
+	if got := clampVisibilityRange(1000); got != MaxVisibilityRange {
+		t.Fatalf("clampVisibilityRange(1000) = %v, want %v", got, MaxVisibilityRange)
+	}
+	if got := clampVisibilityRange(100); got != DefaultVisibilityRange {
+		t.Fatalf("clampVisibilityRange(100) = %v, want %v", got, DefaultVisibilityRange)
 	}
 }
 
