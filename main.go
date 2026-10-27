@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
 	"os/signal"
 	"syscall"
 
@@ -35,9 +36,11 @@ func main() {
 	var loadedWorld *worldmap.Map
 	loadedWorld, err := worldmap.LoadDir(*mapDir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) && !*requireMap {
+		_, manifestStatErr := os.Stat(filepath.Join(*mapDir, "manifest.json"))
+		mapIsNotConfigured := errors.Is(manifestStatErr, fs.ErrNotExist)
+		if mapIsNotConfigured && !*requireMap {
 			log.Printf(
-				"WARNING: world map is not loaded from %q: %v; TCP authentication will still be available",
+				"WARNING: no world export found in %q: %v; TCP authentication will still be available",
 				*mapDir,
 				err,
 			)
