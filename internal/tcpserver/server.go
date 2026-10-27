@@ -342,15 +342,58 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 }
 
 func (s *Server) spawnResponseForPlayer(playerID string) response {
+	// Reconciliation, overlap recovery and state persistence must be atomic with
+	// other players' collision movement updates.
+	s.movementMu.Lock()
+	defer s.movementMu.Unlock()
+
 	if state, ok := s.storedPlayerState(playerID); ok {
 		state = s.alignSavedPlayerToCurrentTerrain(playerID, state)
+		originalPosition := state.Position
+		position, changed, wasOverlapping := s.recoverSpawnOverlap(
+			playerID, state.Position, state.Rotation)
+
+		if s.playerPositionCollides(playerID, position) {
+			s.logger.Printf(
+				"ERROR: cannot restore player spawn without collision: player=%q position=(%.3f, %.3f, %.3f)",
+				playerID, position.X, position.Y, position.Z)
+			return response{
+				Type:    "spawn",
+				Success: boolPointer(false),
+				Message: "no_free_spawn_position",
+			}
+		}
+
+		if changed {
+			state.Position = position
+			state.UpdatedAt = time.Now().UTC()
+			state.Online = true
+			s.playersMu.Lock()
+			s.playerStates[playerID] = state
+			s.stateVersion++
+			s.playersMu.Unlock()
+
+			if wasOverlapping {
+				s.logger.Printf(
+					"player spawn collision recovered backwards: player=%q old=(%.3f, %.3f, %.3f) new=(%.3f, %.3f, %.3f) distance=%.3f",
+					playerID,
+					originalPosition.X, originalPosition.Y, originalPosition.Z,
+					position.X, position.Y, position.Z,
+					math.Hypot(position.X-originalPosition.X, position.Z-originalPosition.Z))
+			}
+		}
+
+		message := "restored_saved_state"
+		if wasOverlapping {
+			message = "restored_saved_state_collision_recovered"
+		}
 		return response{
 			Type:           "spawn",
 			Success:        boolPointer(true),
-			Message:        "restored_saved_state",
-			X:              float64Pointer(state.Position.X),
-			Y:              float64Pointer(state.Position.Y),
-			Z:              float64Pointer(state.Position.Z),
+			Message:        message,
+			X:              float64Pointer(position.X),
+			Y:              float64Pointer(position.Y),
+			Z:              float64Pointer(position.Z),
 			RotationX:      float64Pointer(state.Rotation.X),
 			RotationY:      float64Pointer(state.Rotation.Y),
 			RotationZ:      float64Pointer(state.Rotation.Z),
@@ -359,7 +402,59 @@ func (s *Server) spawnResponseForPlayer(playerID string) response {
 		}
 	}
 
+	// First-time accounts are normally sent a Terrain surface coordinate. If this
+	// location is obstructed too, check a character-root position before sending spawn.
 	spawn := s.surfaceSpawnPoint()
+	rootPosition := spawn
+	rootPosition.Y += 0.05
+	identityRotation := PlayerRotation{W: 1}
+	position, changed, wasOverlapping := s.recoverSpawnOverlap(
+		playerID, rootPosition, identityRotation)
+	if s.playerPositionCollides(playerID, position) {
+		s.logger.Printf(
+			"ERROR: no collision-free initial spawn for player=%q at (%.3f, %.3f, %.3f)",
+			playerID, position.X, position.Y, position.Z)
+		return response{
+			Type:    "spawn",
+			Success: boolPointer(false),
+			Message: "no_free_spawn_position",
+		}
+	}
+
+	if wasOverlapping && changed {
+		// Record the recovered position before the client can send its first transform,
+		// so subsequent sweeps start from the actual collision-free spawn.
+		state := PlayerState{
+			PlayerID:  playerID,
+			Position:  position,
+			Rotation:  identityRotation,
+			UpdatedAt: time.Now().UTC(),
+			Online:    true,
+		}
+		s.playersMu.Lock()
+		s.playerStates[playerID] = state
+		s.stateVersion++
+		s.playersMu.Unlock()
+
+		s.logger.Printf(
+			"initial spawn collision recovered backwards: player=%q old=(%.3f, %.3f, %.3f) new=(%.3f, %.3f, %.3f)",
+			playerID, rootPosition.X, rootPosition.Y, rootPosition.Z,
+			position.X, position.Y, position.Z)
+		return response{
+			Type:           "spawn",
+			Success:        boolPointer(true),
+			Message:        "default_spawn_collision_recovered",
+			X:              float64Pointer(position.X),
+			Y:              float64Pointer(position.Y),
+			Z:              float64Pointer(position.Z),
+			RotationX:      float64Pointer(identityRotation.X),
+			RotationY:      float64Pointer(identityRotation.Y),
+			RotationZ:      float64Pointer(identityRotation.Z),
+			RotationW:      float64Pointer(identityRotation.W),
+			PositionIsRoot: true,
+		}
+	}
+
 	return response{
 		Type:      "spawn",
 		Success:   boolPointer(true),
