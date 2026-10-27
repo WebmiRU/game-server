@@ -214,9 +214,14 @@ type playerStateFile struct {
 func normalizePlayerHealth(state PlayerState) PlayerState {
 	if state.MaxHealth <= 0 {
 		state.MaxHealth = DefaultPlayerMaxHealth
+		// Backfill health only for pre-HP saved states. A legitimate zero HP value
+		// with a known MaxHealth must remain zero.
+		if state.Health <= 0 {
+			state.Health = state.MaxHealth
+		}
 	}
-	if state.Health <= 0 {
-		state.Health = state.MaxHealth
+	if state.Health < 0 {
+		state.Health = 0
 	}
 	if state.Health > state.MaxHealth {
 		state.Health = state.MaxHealth
