@@ -596,6 +596,54 @@ func TestFirstPlayerMovementIsSweptFromServerSpawn(t *testing.T) {
 	}
 }
 
+func TestPlayerCanRecoverWhenAlreadyInsideMonsterCollider(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	if !server.UpsertMonster(MonsterState{
+		ID: "sphere", TemplateID: "test-sphere-enemy", Name: "Enemy 2",
+		Position: worldmap.Vec3{X: 0, Y: 0, Z: 0},
+		Rotation: PlayerRotation{W: 1}, Alive: true,
+	}) {
+		t.Fatal("failed to add sphere monster")
+	}
+
+	// Simulate a character whose saved/previous position is already at the centre
+	// of the sphere. Trying to move straight away must not trap it at that position.
+	resolved := server.resolvePlayerMovement(
+		"player1",
+		worldmap.Vec3{X: 0, Y: 0, Z: 0},
+		worldmap.Vec3{X: 0, Y: 0, Z: 0},
+	)
+	if server.playerPositionCollides("player1", resolved) {
+		t.Fatalf("recovered position %+v still intersects the sphere", resolved)
+	}
+	if distance := math.Hypot(resolved.X, resolved.Z); distance < 1.2 {
+		t.Fatalf("recovered distance from sphere centre = %.3f, want at least 1.2", distance)
+	}
+}
+
+func TestPlayerCanMoveOutWhenItsPreviousPositionOverlapsBox(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	if !server.UpsertMonster(MonsterState{
+		ID: "dog", TemplateID: "test-cube-enemy", Name: "Enemy 1",
+		Position: worldmap.Vec3{X: 0, Y: 0, Z: 0},
+		Rotation: PlayerRotation{W: 1}, Alive: true,
+	}) {
+		t.Fatal("failed to add box monster")
+	}
+
+	resolved := server.resolvePlayerMovement(
+		"player1",
+		worldmap.Vec3{X: 0, Y: 0, Z: 0},
+		worldmap.Vec3{X: 3, Y: 0, Z: 0},
+	)
+	if server.playerPositionCollides("player1", resolved) {
+		t.Fatalf("player could not escape box collision; resolved position=%+v", resolved)
+	}
+	if resolved.X < 1.2 {
+		t.Fatalf("resolved X = %.3f, want player to escape to the outside of the box", resolved.X)
+	}
+}
+
 func TestPlayerMovementStopsAtBoxMonster(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 	if !server.UpsertMonster(MonsterState{
