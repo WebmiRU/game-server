@@ -1113,6 +1113,40 @@ func (s *Server) broadcastMonsterSpawned(monster MonsterState, at time.Time) {
 	}
 }
 
+// broadcastMonsterStateUpdated pushes motion discontinuities that clients cannot predict,
+// such as a monster landing or being moved aside to avoid an active player.
+func (s *Server) broadcastMonsterStateUpdated(monster MonsterState, at time.Time) {
+	if !monster.Alive {
+		return
+	}
+	payload := s.monsterSnapshotState(monster, at)
+	payload.Collider = colliderForMonster(payload)
+
+	type recipient struct {
+		conn net.Conn
+	}
+	recipients := make([]recipient, 0)
+	s.playersMu.RLock()
+	for playerID, conn := range s.playerSessions {
+		state, hasState := s.playerStates[playerID]
+		radius, hasInterest := s.worldInterestRanges[playerID]
+		if conn == nil || !hasState || !state.Online || !hasInterest ||
+			!positionWithinRange(state.Position, monster.Position, radius) {
+			continue
+		}
+		recipients = append(recipients, recipient{conn: conn})
+	}
+	s.playersMu.RUnlock()
+
+	for _, recipient := range recipients {
+		_ = s.writeResponse(recipient.conn, response{
+			Type:    "monster_state",
+			Success: boolPointer(true),
+			Monster: &payload,
+		})
+	}
+}
+
 func (s *Server) handleSetTarget(conn net.Conn, playerID string, req request) error {
 	target, success, message := s.setPlayerTarget(playerID, req.TargetType, req.TargetID)
 	return s.writeResponse(conn, response{
