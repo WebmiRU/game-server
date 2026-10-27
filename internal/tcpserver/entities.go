@@ -22,9 +22,8 @@ const (
 	MonsterCorpseRetention = 7 * time.Second
 	// Respawn is timed from the moment a monster dies, not from when its corpse is removed.
 	MonsterRespawnDelay = 10 * time.Second
-	// Keep the spawn marker in snapshots long enough for clients polling once per second
-	// to discover the new instance and play a short local fade-in.
-	MonsterSpawnStateDuration = 2 * time.Second
+	// Spawn presentation lasts one second; connected clients also receive an immediate spawn event.
+	MonsterSpawnStateDuration = 1 * time.Second
 	MonsterSpawnHeight = 5.0
 )
 
@@ -69,14 +68,19 @@ type MonsterState struct {
 	Collider             ColliderDefinition `json:"collider"`
 	DeathElapsedSeconds float64           `json:"deathElapsedSeconds,omitempty"`
 	Spawning            bool              `json:"spawning,omitempty"`
-	SpawnElapsedSeconds float64           `json:"spawnElapsedSeconds,omitempty"`
+	SpawnElapsedSeconds float64            `json:"spawnElapsedSeconds,omitempty"`
+	SpawnStartPosition  *worldmap.Vec3     `json:"spawnStartPosition,omitempty"`
+	GroundY             *float64           `json:"groundY,omitempty"`
+	VerticalVelocity    *float64           `json:"verticalVelocity,omitempty"`
+	FallElapsedSeconds  float64            `json:"fallElapsedSeconds,omitempty"`
 
 	// Server-only bookkeeping. Spawn/death timing is derived for each world snapshot.
-	groundY          float64
-	verticalVelocity float64
-	falling           bool
-	deathAt           time.Time
-	spawnAt           time.Time
+	groundY             float64
+	verticalVelocity    float64
+	falling             bool
+	spawnStartPosition  worldmap.Vec3
+	deathAt             time.Time
+	spawnAt             time.Time
 }
 
 // MonsterSpawnPoint stores only immutable respawn configuration and the next due time.
@@ -150,11 +154,12 @@ func (s *Server) seedTestMonsters() {
 		rotation := PlayerRotation{X: 0, Y: 0, Z: 0, W: 1}
 		collider := colliderForMonster(MonsterState{TemplateID: seed.templateID})
 		spawnedAt := time.Now()
+		spawnPosition := worldmap.Vec3{X: seed.x, Y: y + MonsterSpawnHeight, Z: seed.z}
 		monster := MonsterState{
 			ID:                  seed.id,
 			TemplateID:          seed.templateID,
 			Name:                seed.name,
-			Position:            worldmap.Vec3{X: seed.x, Y: y + MonsterSpawnHeight, Z: seed.z},
+			Position:            spawnPosition,
 			// Identity quaternion is explicit: the dog's face points +Z and its tail points -Z.
 			Rotation:          rotation,
 			Health:            maxHealth,
@@ -163,10 +168,11 @@ func (s *Server) seedTestMonsters() {
 			Action:            "falling",
 			AIState:           "falling",
 			Collider:          collider,
-			groundY:           y,
-			verticalVelocity:  0,
-			falling:           true,
-			spawnAt:           spawnedAt,
+			groundY:            y,
+			verticalVelocity:   0,
+			falling:            true,
+			spawnStartPosition: spawnPosition,
+			spawnAt:            spawnedAt,
 		}
 		s.monsters[monster.ID] = monster
 		s.monsterSpawnPoints[monster.ID] = MonsterSpawnPoint{
@@ -247,8 +253,10 @@ func (s *Server) UpsertMonster(monster MonsterState) bool {
 	monster.verticalVelocity = 0
 	if monster.falling {
 		monster.spawnAt = time.Now()
+		monster.spawnStartPosition = monster.Position
 	} else {
 		monster.spawnAt = time.Time{}
+		monster.spawnStartPosition = worldmap.Vec3{}
 	}
 
 	s.entitiesMu.Lock()
@@ -449,6 +457,43 @@ func (s *Server) validEntityPosition(position worldmap.Vec3) bool {
 		position.Y <= world.Origin.Y+world.Size.Y+5
 }
 
+func (s *Server) monsterSnapshotState(monster MonsterState, now time.Time) MonsterState {
+	monster.Spawning = false
+	monster.SpawnElapsedSeconds = 0
+	monster.SpawnStartPosition = nil
+	monster.GroundY = nil
+	monster.VerticalVelocity = nil
+	monster.FallElapsedSeconds = 0
+
+	if !monster.Alive {
+		if !monster.deathAt.IsZero() {
+			monster.DeathElapsedSeconds = math.Max(0, now.Sub(monster.deathAt).Seconds())
+		}
+		return monster
+	}
+
+	if monster.falling {
+		startPosition := monster.spawnStartPosition
+		groundY := monster.groundY
+		verticalVelocity := monster.verticalVelocity
+		monster.SpawnStartPosition = &startPosition
+		monster.GroundY = &groundY
+		monster.VerticalVelocity = &verticalVelocity
+		if !monster.spawnAt.IsZero() {
+			monster.FallElapsedSeconds = math.Max(0, now.Sub(monster.spawnAt).Seconds())
+		}
+	}
+
+	if !monster.spawnAt.IsZero() {
+		spawnElapsed := now.Sub(monster.spawnAt)
+		if spawnElapsed >= 0 && spawnElapsed < MonsterSpawnStateDuration {
+			monster.Spawning = true
+			monster.SpawnElapsedSeconds = spawnElapsed.Seconds()
+		}
+	}
+	return monster
+}
+
 func (s *Server) worldSnapshot(requestingPlayerID string, center worldmap.Vec3, radius float64) ([]NearbyPlayer, []MonsterState, []GroundItemState) {
 	now := time.Now()
 	s.pruneExpiredMonsterCorpses(now)
@@ -477,18 +522,7 @@ func (s *Server) worldSnapshot(requestingPlayerID string, center worldmap.Vec3, 
 		if !positionWithinRange(center, monster.Position, radius) {
 			continue
 		}
-		if !monster.Alive {
-			if monster.deathAt.IsZero() {
-				continue
-			}
-			monster.DeathElapsedSeconds = math.Max(0, now.Sub(monster.deathAt).Seconds())
-		} else if !monster.spawnAt.IsZero() {
-			spawnElapsed := now.Sub(monster.spawnAt)
-			if spawnElapsed >= 0 && spawnElapsed < MonsterSpawnStateDuration {
-				monster.Spawning = true
-				monster.SpawnElapsedSeconds = spawnElapsed.Seconds()
-			}
-		}
+		monster = s.monsterSnapshotState(monster, now)
 		monster.Collider = colliderForMonster(monster)
 		nearbyMonsters = append(nearbyMonsters, monster)
 	}
@@ -582,11 +616,12 @@ func (s *Server) respawnDueMonsters(now time.Time) {
 			collider = colliderForMonster(MonsterState{TemplateID: spawnPoint.TemplateID})
 		}
 		spawnedAt := now
+		spawnPosition := worldmap.Vec3{X: spawnPoint.Position.X, Y: groundY + MonsterSpawnHeight, Z: spawnPoint.Position.Z}
 		monster := MonsterState{
 			ID:                  instanceID,
 			TemplateID:          spawnPoint.TemplateID,
 			Name:                spawnPoint.Name,
-			Position:            worldmap.Vec3{X: spawnPoint.Position.X, Y: groundY + MonsterSpawnHeight, Z: spawnPoint.Position.Z},
+			Position:            spawnPosition,
 			Rotation:            spawnPoint.Rotation,
 			Health:              maxHealth,
 			MaxHealth:           maxHealth,
@@ -597,6 +632,7 @@ func (s *Server) respawnDueMonsters(now time.Time) {
 			groundY:             groundY,
 			verticalVelocity:    0,
 			falling:             true,
+			spawnStartPosition:  spawnPosition,
 			spawnAt:             spawnedAt,
 		}
 		s.monsters[instanceID] = monster
