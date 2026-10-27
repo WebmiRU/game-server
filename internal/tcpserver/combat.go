@@ -19,6 +19,7 @@ const (
 	// client click-to-move stopping tolerance, and a small network/physics margin.
 	// Players should not need to physically push into one another to attack.
 	MeleeAttackRangeAllowance = 0.4
+	MeleeAttackDamage         = 10
 	attackCooldownRetryFloor  = 0.05
 	outOfRangeRetryDelay      = 0.15
 )
@@ -102,18 +103,63 @@ func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error
 			"attack_cooldown", target, retryAfter)
 	}
 
+	var damagedMonster *MonsterState
+	if target.Type == "monster" {
+		monster, ok := s.applyMonsterDamage(target.ID, MeleeAttackDamage)
+		if !ok {
+			return s.writeAttackResult(conn, playerID, req.RequestID, false,
+				"target_not_found", nil, 0)
+		}
+		damagedMonster = &monster
+	}
+
 	s.logger.Printf(
-		"melee attack accepted: player=%q targetType=%q targetID=%q distance=%.3f range=%.3f attacksPerSecond=%.3f",
-		playerID, target.Type, target.ID, distance, maxDistance, speed)
+		"melee attack accepted: player=%q targetType=%q targetID=%q damage=%d distance=%.3f range=%.3f attacksPerSecond=%.3f",
+		playerID, target.Type, target.ID, MeleeAttackDamage, distance, maxDistance, speed)
 	return s.writeResponse(conn, response{
 		Type:        "attack_result",
 		Success:     boolPointer(true),
 		Message:     "attack_accepted",
 		PlayerID:    playerID,
 		Target:      target,
+		Monster:     damagedMonster,
 		RequestID:   req.RequestID,
 		AttackSpeed: speed,
 	})
+}
+
+// applyMonsterDamage applies a flat server-authoritative hit and starts the corpse timer once
+// health reaches zero. Dead monsters are immutable until the corpse cleanup removes them.
+func (s *Server) applyMonsterDamage(monsterID string, damage int) (MonsterState, bool) {
+	if damage <= 0 {
+		return MonsterState{}, false
+	}
+
+	s.entitiesMu.Lock()
+	monster, exists := s.monsters[monsterID]
+	if !exists || !monster.Alive {
+		s.entitiesMu.Unlock()
+		return MonsterState{}, false
+	}
+
+	monster.Health -= damage
+	if monster.Health <= 0 {
+		monster.Health = 0
+		monster.Alive = false
+		monster.Action = "dead"
+		monster.AIState = "dead"
+		monster.falling = false
+		monster.verticalVelocity = 0
+		monster.deathAt = time.Now()
+		monster.DeathElapsedSeconds = 0
+	}
+	s.monsters[monsterID] = monster
+	s.entitiesMu.Unlock()
+
+	if !monster.Alive {
+		s.clearTargetReferences("monster", monsterID)
+	}
+	return monster, true
 }
 
 // writeAttackResult includes the target and current effective attack speed when available,
