@@ -601,6 +601,40 @@ func TestListenAndServeRemainsRunningAfterWorldLoad(t *testing.T) {
 	}
 }
 
+func TestMonsterFallSettlesAtServerGroundAndKeepsRotation(t *testing.T) {
+	server := New(Config{Logger: log.New(io.Discard, "", 0)})
+	server.monsters["1"] = MonsterState{
+		ID:                "1",
+		Name:              "Enemy 1",
+		Position:          worldmap.Vec3{X: 10, Y: 5, Z: 10},
+		Rotation:          PlayerRotation{X: 0, Y: 0.70710678, Z: 0, W: 0.70710678},
+		Alive:             true,
+		Action:            "falling",
+		AIState:           "falling",
+		groundY:           0,
+		verticalVelocity:  0,
+		falling:           true,
+	}
+
+	for i := 0; i < 100; i++ {
+		server.simulateMonsterFall(monsterPhysicsTick.Seconds())
+	}
+
+	got := server.monsters["1"]
+	if got.Position.Y != 0 {
+		t.Fatalf("landed Y = %v, want ground Y 0", got.Position.Y)
+	}
+	if got.falling {
+		t.Fatal("monster is still marked as falling after reaching the ground")
+	}
+	if got.Action != "idle" || got.AIState != "idle" {
+		t.Fatalf("landed monster state = action %q, AI %q; want idle/idle", got.Action, got.AIState)
+	}
+	if got.Rotation.Y != 0.70710678 || got.Rotation.W != 0.70710678 {
+		t.Fatalf("server rotation changed during fall: %+v", got.Rotation)
+	}
+}
+
 func createTestWorldMap(t *testing.T) *worldmap.Map {
 	t.Helper()
 	dir := t.TempDir()
