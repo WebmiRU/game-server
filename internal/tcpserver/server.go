@@ -84,8 +84,13 @@ type Server struct {
 	playersMu      sync.RWMutex
 	playerStates   map[string]PlayerState
 	playerSessions map[string]net.Conn
+	worldInterestRanges map[string]float64
 	stateVersion   uint64
 	savedVersion   uint64
+
+	// Async world events and normal request responses share the same TCP stream.
+	// Serialize writes so concurrent producers cannot interleave JSON lines.
+	writeMu sync.Mutex
 
 	entitiesMu             sync.RWMutex
 	monsters               map[string]MonsterState
@@ -151,9 +156,10 @@ func New(config Config) *Server {
 		stateFile:         strings.TrimSpace(config.StateFile),
 		stateSaveInterval: stateSaveInterval,
 		movementRetryTimeout: movementRetryTimeout,
-		movementProgress: make(map[string]movementProgressState),
-		playerStates:      make(map[string]PlayerState),
-		playerSessions:    make(map[string]net.Conn),
+		movementProgress:    make(map[string]movementProgressState),
+		playerStates:        make(map[string]PlayerState),
+		playerSessions:      make(map[string]net.Conn),
+		worldInterestRanges: make(map[string]float64),
 		monsters:               make(map[string]MonsterState),
 		monsterSpawnPoints:     make(map[string]MonsterSpawnPoint),
 		monsterSpawnIDByEntity: make(map[string]string),
@@ -412,6 +418,7 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 		return
 	}
 	delete(s.playerSessions, playerID)
+	delete(s.worldInterestRanges, playerID)
 	delete(s.movementProgress, playerID)
 	if state, ok := s.playerStates[playerID]; ok {
 		state.Online = false
@@ -1048,6 +1055,9 @@ func (s *Server) handleWorldInterest(conn net.Conn, playerID string, req request
 		radius = *req.VisibilityRange
 	}
 	radius = clampVisibilityRange(radius)
+	s.playersMu.Lock()
+	s.worldInterestRanges[playerID] = radius
+	s.playersMu.Unlock()
 	players, monsters, items := s.worldSnapshot(playerID, state.Position, radius)
 	return s.writeResponse(conn, response{
 		Type:            "world_snapshot",
@@ -1061,6 +1071,40 @@ func (s *Server) handleWorldInterest(conn net.Conn, playerID string, req request
 		Items:            items,
 		AttackSpeed:      s.PlayerAttackSpeed(playerID),
 	})
+}
+
+// broadcastMonsterSpawned sends an immediate event to subscribed clients that could see
+// this spawn point. World snapshots remain the correction channel for later state changes.
+func (s *Server) broadcastMonsterSpawned(monster MonsterState, at time.Time) {
+	if !monster.Alive {
+		return
+	}
+	payload := s.monsterSnapshotState(monster, at)
+	payload.Collider = colliderForMonster(payload)
+
+	type recipient struct {
+		conn net.Conn
+	}
+	recipients := make([]recipient, 0)
+	s.playersMu.RLock()
+	for playerID, conn := range s.playerSessions {
+		state, hasState := s.playerStates[playerID]
+		radius, hasInterest := s.worldInterestRanges[playerID]
+		if conn == nil || !hasState || !state.Online || !hasInterest ||
+			!positionWithinRange(state.Position, monster.Position, radius) {
+			continue
+		}
+		recipients = append(recipients, recipient{conn: conn})
+	}
+	s.playersMu.RUnlock()
+
+	for _, recipient := range recipients {
+		_ = s.writeResponse(recipient.conn, response{
+			Type:    "monster_spawned",
+			Success: boolPointer(true),
+			Monster: &payload,
+		})
+	}
 }
 
 func (s *Server) handleSetTarget(conn net.Conn, playerID string, req request) error {
@@ -1405,6 +1449,9 @@ func finiteNumber(value float64) bool {
 }
 
 func (s *Server) writeResponse(conn net.Conn, value response) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return err
 	}
