@@ -1047,10 +1047,14 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 
 	s.logPlayerState(state)
 
-	positionCorrected := math.Abs(acceptedPosition.X-requestedPosition.X) > 0.01 ||
-		math.Abs(acceptedPosition.Y-requestedPosition.Y) > 0.01 ||
+	horizontalPositionCorrected := math.Abs(acceptedPosition.X-requestedPosition.X) > 0.01 ||
 		math.Abs(acceptedPosition.Z-requestedPosition.Z) > 0.01
-	if positionCorrected {
+	verticalPositionCorrected := math.Abs(acceptedPosition.Y-requestedPosition.Y) > 0.01
+
+	// Horizontal corrections mean a player hit an entity and the client must stop
+	// its click-to-move order. Y-only differences are terrain reconciliation: they
+	// must not be treated as a wall, because doing so cancels movement on slopes.
+	if horizontalPositionCorrected {
 		return s.writeResponse(conn, response{
 			Type:       "player_state_result",
 			Success:    boolPointer(true),
@@ -1063,6 +1067,15 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 			RotationY:  float64Pointer(state.Rotation.Y),
 			RotationZ:  float64Pointer(state.Rotation.Z),
 			RotationW:  float64Pointer(state.Rotation.W),
+		})
+	}
+	if verticalPositionCorrected {
+		return s.writeResponse(conn, response{
+			Type:     "player_state_result",
+			Success:  boolPointer(true),
+			Message:  "server_ground_correction",
+			PlayerID: playerID,
+			Y:        float64Pointer(acceptedPosition.Y),
 		})
 	}
 

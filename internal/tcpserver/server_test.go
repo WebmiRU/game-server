@@ -482,6 +482,53 @@ func TestSavedPlayerHeightReconcilesAfterTerrainHeightmapChanges(t *testing.T) {
 	}
 }
 
+func TestGroundHeightAdjustmentUsesNonBlockingCorrection(t *testing.T) {
+	world := createTestWorldMap(t)
+	server := New(Config{
+		World:  world,
+		Logger: log.New(io.Discard, "", 0),
+	})
+	position := worldmap.Vec3{X: 0.5, Z: 0.5}
+	groundY, ok := world.HeightAtWorld(position.X, position.Z)
+	if !ok {
+		t.Fatal("test position is outside the fixture world")
+	}
+	server.playerStates["player1"] = PlayerState{
+		PlayerID: "player1",
+		Position: worldmap.Vec3{X: position.X, Y: groundY + 0.05, Z: position.Z},
+		Rotation: PlayerRotation{W: 1},
+		UpdatedAt: time.Now().UTC(),
+		Online: true,
+	}
+	server.playerSessions["player1"] = nil
+
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+
+	// Send the same horizontal position with a Y that the server grounds to Terrain.
+	sendRequest(t, conn, testRequest{
+		Type: "player_state",
+		X: float64PointerForTest(position.X),
+		Y: float64PointerForTest(groundY + 1.0),
+		Z: float64PointerForTest(position.Z),
+		RotationX: float64PointerForTest(0),
+		RotationY: float64PointerForTest(0),
+		RotationZ: float64PointerForTest(0),
+		RotationW: float64PointerForTest(1),
+	})
+
+	correction := readWireResponse(t, scanner)
+	if correction.Type != "player_state_result" || correction.Message != "server_ground_correction" {
+		t.Fatalf("response = %+v, want non-blocking server_ground_correction", correction)
+	}
+	if correction.Y == nil || math.Abs(*correction.Y-(groundY+0.05)) > 1e-9 {
+		t.Fatalf("corrected Y = %v, want %.9f", correction.Y, groundY+0.05)
+	}
+	if correction.X != nil || correction.Z != nil {
+		t.Fatalf("ground correction should not overwrite horizontal movement: %+v", correction)
+	}
+}
+
 func TestReconnectMovesSavedPlayerToNearestFreePosition(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 	savedPosition := worldmap.Vec3{X: 100, Y: 0, Z: 100}
