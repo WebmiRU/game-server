@@ -3,6 +3,7 @@ package tcpserver
 import (
 	"context"
 	"math"
+	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
@@ -127,6 +128,12 @@ var builtInItemDefinitions = map[string]ItemDefinition{
 		Category:   "consumable",
 		Stackable:  true,
 	},
+	"soulshot-c-grade": {
+		TemplateID: "soulshot-c-grade",
+		Name:       "Soulshot (C-grade)",
+		Category:   "consumable",
+		Stackable:  true,
+	},
 }
 
 // ResolveItemDefinition returns a registered prototype or a safe generic definition for future item types.
@@ -157,11 +164,12 @@ func ResolveItemDefinition(templateID, fallbackName string) ItemDefinition {
 
 // GroundItemState is a server-owned item instance lying in the world.
 type GroundItemState struct {
-	ID           string        `json:"id"`
-	ItemTemplate string        `json:"itemTemplate"`
-	Name         string        `json:"name"`
-	Position     worldmap.Vec3 `json:"position"`
-	Quantity     int           `json:"quantity"`
+	ID            string         `json:"id"`
+	ItemTemplate  string         `json:"itemTemplate"`
+	Name          string         `json:"name"`
+	Position      worldmap.Vec3  `json:"position"`
+	Quantity      int            `json:"quantity"`
+	SpawnPosition *worldmap.Vec3 `json:"spawnPosition,omitempty"
 }
 // TargetReference identifies a live entity selected by one player.
 // References are server-owned runtime state and are intentionally not persisted with transforms.
@@ -520,6 +528,96 @@ func (s *Server) RemoveGroundItem(id string) bool {
 		s.clearTargetReferences("item", id)
 	}
 	return exists
+}
+
+// spawnMonsterLoot creates one physical capsule representing ten stackable soulshots.
+// Its launch point is the monster's head; the final point is randomly scattered up to one
+// metre outside the horizontal collider boundary and placed on the authoritative terrain.
+func (s *Server) spawnMonsterLoot(monster MonsterState) {
+	var templateID, name string
+	switch monster.TemplateID {
+	case "test-sphere-enemy": // Enemy-2 drops D-grade.
+		templateID, name = "soulshot-d-grade", "Soulshot (D-grade)"
+	case "test-cube-enemy": // The box-shaped dog drops C-grade.
+		templateID, name = "soulshot-c-grade", "Soulshot (C-grade)"
+	default:
+		return
+	}
+
+	collider := colliderForMonster(monster)
+	if collider.Shape == "" {
+		collider = monster.Collider
+	}
+	if collider.Height <= 0 {
+		collider.Height = 2
+	}
+	spawnPosition := monster.Position
+	spawnPosition.Y += collider.Height
+
+	landing := worldmap.Vec3{}
+	landingFound := false
+	for attempt := 0; attempt < 24; attempt++ {
+		angle := rand.Float64() * 2 * math.Pi
+		dirX, dirZ := math.Cos(angle), math.Sin(angle)
+		boundaryDistance := collider.Radius
+		if collider.Shape == ColliderBox {
+			boundaryDistance = rotatedBoxSupportRadius(collider.Size, monster.Rotation, dirX, dirZ)
+		}
+		if boundaryDistance < 0.1 {
+			boundaryDistance = 0.5
+		}
+		distance := boundaryDistance + 0.15 + rand.Float64()*0.85
+		landing.X = monster.Position.X + dirX*distance
+		landing.Z = monster.Position.Z + dirZ*distance
+		landing.Y = monster.groundY
+
+		if s.world != nil {
+			groundY, insideWorld := s.world.HeightAtWorld(landing.X, landing.Z)
+			if !insideWorld {
+				continue
+			}
+			landing.Y = groundY
+		} else {
+			landing.Y = monster.Position.Y
+		}
+		if s.validEntityPosition(landing) {
+			landingFound = true
+			break
+		}
+	}
+
+	if !landingFound {
+		landing = worldmap.Vec3{X: monster.Position.X, Y: monster.groundY, Z: monster.Position.Z}
+		if s.world != nil {
+			if groundY, ok := s.world.HeightAtWorld(landing.X, landing.Z); ok {
+				landing.Y = groundY
+			}
+		}
+		if !s.validEntityPosition(landing) {
+			s.logger.Printf("WARNING: cannot place soulshot loot for monster %q: no valid terrain landing point", monster.ID)
+			return
+		}
+	}
+
+	deathTime := monster.deathAt
+	if deathTime.IsZero() {
+		deathTime = time.Now()
+	}
+	item := GroundItemState{
+		ID:            "loot-" + monster.ID + "-" + strconv.FormatInt(deathTime.UnixNano(), 10),
+		ItemTemplate:  templateID,
+		Name:          name,
+		Position:      landing,
+		Quantity:      10,
+		SpawnPosition: &spawnPosition,
+	}
+	if !s.AddGroundItem(item) {
+		s.logger.Printf("WARNING: failed to create %s drop for monster %q", templateID, monster.ID)
+		return
+	}
+	s.logger.Printf("monster loot spawned: monster=%q item=%q quantity=10 launch=(%.2f, %.2f, %.2f) landing=(%.2f, %.2f, %.2f)",
+		monster.ID, templateID, spawnPosition.X, spawnPosition.Y, spawnPosition.Z,
+		landing.X, landing.Y, landing.Z)
 }
 
 func (s *Server) validEntityPosition(position worldmap.Vec3) bool {
