@@ -647,6 +647,9 @@ func (s *Server) spawnMonsterLoot(monster MonsterState) {
 	s.logger.Printf("monster loot spawned: monster=%q item=%q quantity=10 launch=(%.2f, %.2f, %.2f) landing=(%.2f, %.2f, %.2f)",
 		monster.ID, templateID, spawnPosition.X, spawnPosition.Y, spawnPosition.Z,
 		landing.X, landing.Y, landing.Z)
+	// Push the new drop immediately. Full world snapshots remain the reconciliation path,
+	// but should not be the only way a newly created item becomes visible to clients.
+	s.broadcastGroundItemSpawned(item)
 }
 
 func (s *Server) validEntityPosition(position worldmap.Vec3) bool {
