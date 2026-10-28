@@ -1097,7 +1097,7 @@ func (s *Server) broadcastMonsterSpawned(monster MonsterState, at time.Time) {
 		return
 	}
 	payload := s.monsterSnapshotState(monster, at)
-	payload.Collider = playerCollisionColliderForMonster(payload)
+	payload.Collider = colliderForMonster(payload)
 
 	type recipient struct {
 		conn net.Conn
@@ -1131,7 +1131,7 @@ func (s *Server) broadcastMonsterStateUpdated(monster MonsterState, at time.Time
 		return
 	}
 	payload := s.monsterSnapshotState(monster, at)
-	payload.Collider = playerCollisionColliderForMonster(payload)
+	payload.Collider = colliderForMonster(payload)
 
 	type recipient struct {
 		conn net.Conn
