@@ -15,9 +15,10 @@ const (
 	MinAttackSpeed     = 0.1
 	MaxAttackSpeed     = 10.0
 
-	// MeleeAttackRangeAllowance includes the intentional small gap between colliders,
-	// client click-to-move stopping tolerance, and a small network/physics margin.
-	// Players should not need to physically push into one another to attack.
+	// MeleeAttackRangeAllowance is independent of physical collider dimensions. The
+	// animated golem's swing needs extra visual room so the body/shoulder does not enter
+	// the target. The client uses a matching golemAttackStandOff for its approach point.
+	// The remaining difference covers click-to-move tolerance and network/physics margin.
 	MeleeAttackRangeAllowance = 1.7
 	MeleeAttackDamage         = 10
 	MeleeSideDamageMultiplier = 1.5
