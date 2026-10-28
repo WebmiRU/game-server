@@ -252,6 +252,7 @@ func (s *Server) applyMonsterMeleeDamage(
 	s.entitiesMu.Unlock()
 
 	if !monster.Alive {
+		s.spawnMonsterLoot(monster)
 		s.clearTargetReferences("monster", monsterID)
 	}
 	return monster, damage, direction, multiplier, true
@@ -287,6 +288,7 @@ func (s *Server) applyMonsterDamage(monsterID string, damage int) (MonsterState,
 	s.entitiesMu.Unlock()
 
 	if !monster.Alive {
+		s.spawnMonsterLoot(monster)
 		s.clearTargetReferences("monster", monsterID)
 	}
 	return monster, true
