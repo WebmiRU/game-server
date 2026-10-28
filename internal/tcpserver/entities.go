@@ -540,7 +540,7 @@ func (s *Server) RemoveGroundItem(id string) bool {
 func (s *Server) dropInventoryStack(
 	playerID, itemTemplate string,
 	quantity int,
-	requestedX, requestedZ float64,
+	requestedX, requestedY, requestedZ float64,
 ) (GroundItemState, []InventoryStack, bool, string) {
 	player, exists := s.storedPlayerState(playerID)
 	if !exists || !player.Online {
@@ -554,7 +554,7 @@ func (s *Server) dropInventoryStack(
 	if quantity < 1 {
 		return GroundItemState{}, nil, false, "quantity_must_be_positive"
 	}
-	if !finiteNumber(requestedX) || !finiteNumber(requestedZ) {
+	if !finiteNumber(requestedX) || !finiteNumber(requestedY) || !finiteNumber(requestedZ) {
 		return GroundItemState{}, nil, false, "invalid_drop_coordinates"
 	}
 	canonicalTemplate := ResolveItemDefinition(itemTemplate, "").TemplateID
@@ -592,7 +592,7 @@ func (s *Server) dropInventoryStack(
 		fraction := float64(step) / 16.0
 		landing = worldmap.Vec3{
 			X: player.Position.X + deltaX*fraction,
-			Y: groundY,
+			Y: requestedY,
 			Z: player.Position.Z + deltaZ*fraction,
 		}
 		if s.world != nil {
@@ -600,6 +600,8 @@ func (s *Server) dropInventoryStack(
 			if !insideWorld {
 				continue
 			}
+			// The server's heightmap is authoritative; requestedY is used only when no
+			// server world map exists.
 			landing.Y = height
 		}
 		if s.validEntityPosition(landing) {
