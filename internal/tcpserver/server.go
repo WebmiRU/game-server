@@ -287,6 +287,7 @@ type response struct {
 	Monsters        []MonsterState      `json:"monsters,omitempty"`
 	Monster         *MonsterState       `json:"monster,omitempty"`
 	Items           []GroundItemState   `json:"items,omitempty"`
+	Item            *GroundItemState    `json:"item,omitempty"`
 	ItemID          string              `json:"itemId,omitempty"`
 	ItemName        string              `json:"itemName,omitempty"`
 	Inventory       []InventoryStack   `json:"inventory,omitempty"`
