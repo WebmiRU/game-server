@@ -271,3 +271,127 @@ func TestClearingItemTargetCancelsPickupIntent(t *testing.T) {
 		t.Fatal("item disappeared after pickup was cancelled")
 	}
 }
+
+func TestDropInventoryStackUsesThrowDirectionAndBroadcastsGroundItem(t *testing.T) {
+	server := newItemTestServer()
+	conn, scanner, _ := startPipeConnectionWithServer(t, server)
+	authenticateTestPlayer(t, conn, scanner)
+
+	playerPosition := worldmap.Vec3{X: 10, Y: 3.05, Z: 20}
+	server.playersMu.Lock()
+	server.playerStates["player1"] = PlayerState{
+		PlayerID: "player1",
+		Position: playerPosition,
+		Rotation: PlayerRotation{W: 1},
+		Online:   true,
+	}
+	server.worldInterestRanges["player1"] = 50
+	server.playersMu.Unlock()
+
+	server.inventoryMu.Lock()
+	server.playerInventories["player1"] = []InventoryStack{{
+		ItemTemplate: "soulshot-d-grade",
+		Name:         "Soulshot (D-grade)",
+		Category:     "consumable",
+		Stackable:    true,
+		Quantity:     10,
+	}}
+	server.inventoryMu.Unlock()
+
+	sendRequest(t, conn, testRequest{
+		Type:         "drop_item",
+		ItemTemplate: "soulshot-d-grade",
+		Quantity:     10,
+		DirectionX:   1,
+		DirectionZ:   0,
+	})
+
+	dropped := readWireResponse(t, scanner)
+	if dropped.Type != "item_dropped" {
+		t.Fatalf("drop response type = %q, want item_dropped", dropped.Type)
+	}
+	assertSuccess(t, dropped, true)
+	if dropped.Item == nil || dropped.Item.SpawnPosition == nil {
+		t.Fatalf("drop response is missing item or launch position: %+v", dropped.Item)
+	}
+	item := dropped.Item
+	if item.ItemTemplate != "soulshot-d-grade" || item.Quantity != 10 {
+		t.Fatalf("unexpected dropped stack: %+v", item)
+	}
+	if len(dropped.Inventory) != 0 {
+		t.Fatalf("inventory after dropping the only stack = %+v, want empty", dropped.Inventory)
+	}
+
+	dx := item.Position.X - playerPosition.X
+	dz := item.Position.Z - playerPosition.Z
+	horizontalDistance := math.Hypot(dx, dz)
+	if math.Abs(horizontalDistance-1.5) > 1e-6 {
+		t.Fatalf("landing distance = %.3f m, want 1.5 m", horizontalDistance)
+	}
+	if dx <= 0 || math.Abs(dz) > 1e-6 {
+		t.Fatalf("drop did not follow +X throw direction: player=(%.2f, %.2f), item=(%.2f, %.2f)",
+			playerPosition.X, playerPosition.Z, item.Position.X, item.Position.Z)
+	}
+	if math.Hypot(dx, math.Hypot(item.Position.Y-playerPosition.Y, dz)) > 2.0 {
+		t.Fatalf("drop landed more than 2 m from player: player=%+v item=%+v", playerPosition, item.Position)
+	}
+	if math.Abs((item.SpawnPosition.Y-item.Position.Y)-2.0) > 1e-6 {
+		t.Fatalf("launch height above landing = %.3f m, want 2 m", item.SpawnPosition.Y-item.Position.Y)
+	}
+
+	spawned := readWireResponse(t, scanner)
+	if spawned.Type != "ground_item_spawned" || spawned.Item == nil || spawned.Item.ID != item.ID {
+		t.Fatalf("unexpected ground-item broadcast after drop: %+v", spawned)
+	}
+	server.inventoryMu.RLock()
+	remaining := append([]InventoryStack(nil), server.playerInventories["player1"]...)
+	server.inventoryMu.RUnlock()
+	if len(remaining) != 0 {
+		t.Fatalf("server inventory after drop = %+v, want empty", remaining)
+	}
+	server.entitiesMu.RLock()
+	registeredItem, exists := server.groundItems[item.ID]
+	server.entitiesMu.RUnlock()
+	if !exists || registeredItem.Quantity != 10 {
+		t.Fatalf("dropped item not registered in the world: %+v exists=%v", registeredItem, exists)
+	}
+}
+
+func TestDropInventoryStackRejectsQuantityAboveInventory(t *testing.T) {
+	server := newItemTestServer()
+	server.playersMu.Lock()
+	server.playerStates["player1"] = PlayerState{
+		PlayerID: "player1",
+		Position: worldmap.Vec3{X: 10, Y: 3.05, Z: 20},
+		Rotation: PlayerRotation{W: 1},
+		Online:   true,
+	}
+	server.playersMu.Unlock()
+	server.inventoryMu.Lock()
+	server.playerInventories["player1"] = []InventoryStack{{
+		ItemTemplate: "soulshot-d-grade",
+		Name:         "Soulshot (D-grade)",
+		Category:     "consumable",
+		Stackable:    true,
+		Quantity:     2,
+	}}
+	server.inventoryMu.Unlock()
+
+	_, _, success, reason := server.dropInventoryStack("player1", "soulshot-d-grade", 3, 0, 1)
+	if success || reason != "insufficient_inventory_quantity" {
+		t.Fatalf("drop of more items than owned: success=%v reason=%q", success, reason)
+	}
+	server.inventoryMu.RLock()
+	remaining := append([]InventoryStack(nil), server.playerInventories["player1"]...)
+	server.inventoryMu.RUnlock()
+	if len(remaining) != 1 || remaining[0].Quantity != 2 {
+		t.Fatalf("failed drop changed inventory: %+v", remaining)
+	}
+	server.entitiesMu.RLock()
+	dropCount := len(server.groundItems)
+	server.entitiesMu.RUnlock()
+	if dropCount != 0 {
+		t.Fatalf("failed drop created %d ground items, want none", dropCount)
+	}
+}
+
