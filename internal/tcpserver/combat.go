@@ -25,6 +25,7 @@ const (
 	meleeFrontRearDotThreshold = 0.7071067811865476 // cos(45 degrees)
 	attackCooldownRetryFloor  = 0.05
 	outOfRangeRetryDelay      = 0.15
+	attackWindupFraction      = 0.9
 )
 
 // SetPlayerAttackSpeed sets a player's current effective attack frequency in attacks per
@@ -89,9 +90,9 @@ func (s *Server) resolveAttackTarget(playerID string, req request) (*TargetRefer
 	return &target, ""
 }
 
-// handleAttack validates one strike against the target of the active command.
-// Selection is independent from commands; target existence, range, cooldown, and damage
-// remain server-authoritative.
+// handleAttack validates the beginning of one melee swing. The server reserves its
+// attack cadence immediately, acknowledges the start, then resolves the strike after
+// the wind-up. Damage and target state are never applied at command-receive time.
 func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error {
 	target, targetError := s.resolveAttackTarget(playerID, req)
 	if target == nil {
@@ -133,6 +134,73 @@ func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error
 			"attack_cooldown", target, retryAfter)
 	}
 
+	// The client starts its swing on this acknowledgement. The eventual attack_result
+	// is a separate packet sent only after the wind-up has elapsed.
+	if err := s.writeResponse(conn, response{
+		Type:        "attack_started",
+		Success:     boolPointer(true),
+		Message:     "attack_started",
+		PlayerID:    playerID,
+		Target:      target,
+		RequestID:   req.RequestID,
+		AttackSpeed: speed,
+	}); err != nil {
+		return err
+	}
+
+	windUp := time.Duration(float64(time.Second) * attackWindupFraction / speed)
+	go func() {
+		timer := time.NewTimer(windUp)
+		defer timer.Stop()
+		<-timer.C
+		s.resolveAttackAtImpact(conn, playerID, req, speed)
+	}()
+	return nil
+}
+
+// resolveAttackAtImpact performs the server-authoritative hit check when the swing
+// reaches its completion point. It re-reads both transforms and the target's live state;
+// moving away or dying during the wind-up can therefore turn the attempt into a miss.
+func (s *Server) resolveAttackAtImpact(conn net.Conn, playerID string, req request, attackSpeed float64) {
+	target, targetError := s.resolveAttackTarget(playerID, req)
+	if target == nil {
+		if err := s.writeAttackResult(conn, playerID, req.RequestID, false,
+			targetError, nil, 0); err != nil {
+			s.logger.Printf("WARNING: cannot send completed attack result to %q: %v", playerID, err)
+		}
+		return
+	}
+
+	attacker, exists := s.storedPlayerState(playerID)
+	if !exists || !attacker.Online {
+		if err := s.writeAttackResult(conn, playerID, req.RequestID, false,
+			"attacker_state_unavailable", target, 0); err != nil {
+			s.logger.Printf("WARNING: cannot send completed attack result to %q: %v", playerID, err)
+		}
+		return
+	}
+
+	targetPosition, targetRadius, exists := s.attackTargetInfo(*target, attacker.Position)
+	if !exists {
+		if err := s.writeAttackResult(conn, playerID, req.RequestID, false,
+			"target_not_found", nil, 0); err != nil {
+			s.logger.Printf("WARNING: cannot send completed attack result to %q: %v", playerID, err)
+		}
+		return
+	}
+
+	distance := math.Hypot(
+		attacker.Position.X-targetPosition.X,
+		attacker.Position.Z-targetPosition.Z)
+	maxDistance := PlayerColliderRadius + targetRadius + MeleeAttackRangeAllowance
+	if distance > maxDistance {
+		if err := s.writeAttackResult(conn, playerID, req.RequestID, false,
+			"attack_out_of_range", target, outOfRangeRetryDelay); err != nil {
+			s.logger.Printf("WARNING: cannot send completed attack result to %q: %v", playerID, err)
+		}
+		return
+	}
+
 	var damagedMonster *MonsterState
 	damage := 0
 	attackSide := ""
@@ -141,8 +209,11 @@ func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error
 		monster, appliedDamage, side, multiplier, ok :=
 			s.applyMonsterMeleeDamage(target.ID, attacker.Position)
 		if !ok {
-			return s.writeAttackResult(conn, playerID, req.RequestID, false,
-				"target_not_found", nil, 0)
+			if err := s.writeAttackResult(conn, playerID, req.RequestID, false,
+				"target_not_found", nil, 0); err != nil {
+				s.logger.Printf("WARNING: cannot send completed attack result to %q: %v", playerID, err)
+			}
+			return
 		}
 		damagedMonster = &monster
 		damage = appliedDamage
@@ -151,21 +222,23 @@ func (s *Server) handleAttack(conn net.Conn, playerID string, req request) error
 	}
 
 	s.logger.Printf(
-		"melee attack accepted: player=%q targetType=%q targetID=%q damage=%d direction=%q multiplier=%.1f distance=%.3f range=%.3f attacksPerSecond=%.3f",
-		playerID, target.Type, target.ID, damage, attackSide, damageMultiplier, distance, maxDistance, speed)
-	return s.writeResponse(conn, response{
-		Type:             "attack_result",
-		Success:          boolPointer(true),
-		Message:          "attack_accepted",
-		PlayerID:         playerID,
-		Target:           target,
-		Monster:          damagedMonster,
-		RequestID:        req.RequestID,
-		AttackSpeed:      speed,
-		Damage:           damage,
-		DamageMultiplier: damageMultiplier,
-		AttackSide:       attackSide,
-	})
+		"melee attack resolved: player=%q targetType=%q targetID=%q damage=%d direction=%q multiplier=%.1f distance=%.3f range=%.3f attacksPerSecond=%.3f",
+		playerID, target.Type, target.ID, damage, attackSide, damageMultiplier, distance, maxDistance, attackSpeed)
+	if err := s.writeResponse(conn, response{
+		Type:              "attack_result",
+		Success:           boolPointer(true),
+		Message:           "attack_accepted",
+		PlayerID:          playerID,
+		Target:            target,
+		Monster:           damagedMonster,
+		RequestID:         req.RequestID,
+		AttackSpeed:       attackSpeed,
+		Damage:            damage,
+		DamageMultiplier:  damageMultiplier,
+		AttackSide:        attackSide,
+	}); err != nil {
+		s.logger.Printf("WARNING: cannot send completed attack result to %q: %v", playerID, err)
+	}
 }
 
 // calculateMeleeDamage classifies the horizontal direction of an attacker relative to a
