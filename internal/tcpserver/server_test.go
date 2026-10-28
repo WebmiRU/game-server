@@ -913,36 +913,22 @@ func TestMeleeDamageUsesAttackerPositionRelativeToTargetFacing(t *testing.T) {
 	}
 }
 
-func TestPlayerCollisionColliderAddsOnlyHorizontalMonsterClearance(t *testing.T) {
-	sphere := MonsterState{TemplateID: "test-sphere-enemy"}
-	baseSphere := colliderForMonster(sphere)
-	paddedSphere := playerCollisionColliderForMonster(sphere)
-	if baseSphere.Radius != 1 {
-		t.Fatalf("base sphere radius = %.2f, want 1.00", baseSphere.Radius)
-	}
-	if paddedSphere.Radius != 1.5 || paddedSphere.Height != baseSphere.Height {
-		t.Fatalf("padded sphere collider = %+v, want radius 1.5 with unchanged height %.2f",
-			paddedSphere, baseSphere.Height)
+func TestMonsterColliderDefaultsKeepPhysicalDimensions(t *testing.T) {
+	sphere := colliderForMonster(MonsterState{TemplateID: "test-sphere-enemy"})
+	if sphere.Radius != 1 || sphere.Height != 2 {
+		t.Fatalf("base sphere collider = %+v, want radius 1 and height 2", sphere)
 	}
 
-	box := MonsterState{
+	box := colliderForMonster(MonsterState{
 		TemplateID: "test-cube-enemy",
 		Collider: ColliderDefinition{
-			Shape: ColliderBox,
+			Shape:  ColliderBox,
 			Height: 2,
-			Size: worldmap.Vec3{X: 2, Y: 2, Z: 4},
+			Size:   worldmap.Vec3{X: 2, Y: 2, Z: 4},
 		},
-	}
-	paddedBox := playerCollisionColliderForMonster(box)
-	if paddedBox.Size.X != 3 || paddedBox.Size.Y != 2 || paddedBox.Size.Z != 6 ||
-		paddedBox.Height != 2 {
-		t.Fatalf("padded box collider = %+v, want 3x2x6 footprint and unchanged height 2",
-			paddedBox)
-	}
-
-	// The stored/base collider remains unchanged, so snapshots cannot amplify it again.
-	if box.Collider.Size.X != 2 || box.Collider.Size.Y != 2 || box.Collider.Size.Z != 4 {
-		t.Fatalf("base box collider was mutated: %+v", box.Collider)
+	})
+	if box.Size.X != 2 || box.Size.Y != 2 || box.Size.Z != 4 || box.Height != 2 {
+		t.Fatalf("base box collider = %+v, want 2x2x4 footprint and height 2", box)
 	}
 }
 
