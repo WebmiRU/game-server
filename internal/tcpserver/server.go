@@ -203,6 +203,7 @@ type request struct {
 	ItemTemplate     string   `json:"itemTemplate,omitempty"`
 	Quantity         int      `json:"quantity,omitempty"`
 	DropX            *float64 `json:"dropX,omitempty"`
+	DropY            *float64 `json:"dropY,omitempty"`
 	DropZ            *float64 `json:"dropZ,omitempty"`
 	RequestID        int     `json:"requestId,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
@@ -1024,7 +1025,7 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req 
 		return s.handleAttack(conn, playerID, req)
 
 	case "drop_item":
-		if req.DropX == nil || req.DropZ == nil {
+		if req.DropX == nil || req.DropY == nil || req.DropZ == nil {
 			return s.writeResponse(conn, response{
 				Type:    "item_dropped",
 				Success: boolPointer(false),
@@ -1032,7 +1033,7 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req 
 			})
 		}
 		item, inventory, success, reason := s.dropInventoryStack(
-			playerID, req.ItemTemplate, req.Quantity, *req.DropX, *req.DropZ)
+			playerID, req.ItemTemplate, req.Quantity, *req.DropX, *req.DropY, *req.DropZ)
 		if !success {
 			return s.writeResponse(conn, response{
 				Type:    "item_dropped",
