@@ -66,8 +66,8 @@ type testRequest struct {
 	TargetID   string  `json:"targetId,omitempty"`
 	ItemTemplate string `json:"itemTemplate,omitempty"`
 	Quantity int `json:"quantity,omitempty"`
-	DirectionX float64 `json:"directionX,omitempty"`
-	DirectionZ float64 `json:"directionZ,omitempty"`
+	DropX *float64 `json:"dropX,omitempty"`
+	DropZ *float64 `json:"dropZ,omitempty"`
 	RequestID  int     `json:"requestId,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
