@@ -1,10 +1,13 @@
 package tcpserver
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"math"
+	"net"
 	"testing"
+	"time"
 
 	"game-server/internal/worldmap"
 )
@@ -113,6 +116,53 @@ func TestMonsterDeathDropsOneTenCountSoulshotCapsule(t *testing.T) {
 				t.Fatalf("landing Y = %.3f, want ground Y %.3f in test world", drop.Position.Y, position.Y)
 			}
 		})
+	}
+}
+
+func TestGroundItemSpawnBroadcastsImmediatelyToInterestedClient(t *testing.T) {
+	server := newItemTestServer()
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	server.playersMu.Lock()
+	server.playerSessions["player1"] = serverConn
+	server.playerStates["player1"] = PlayerState{
+		PlayerID: "player1",
+		Position: worldmap.Vec3{X: 10, Y: 2, Z: 20},
+		Online:   true,
+	}
+	server.worldInterestRanges["player1"] = 50
+	server.playersMu.Unlock()
+
+	item := GroundItemState{
+		ID:           "loot-event-test",
+		ItemTemplate: "soulshot-c-grade",
+		Name:         "Soulshot (C-grade)",
+		Position:     worldmap.Vec3{X: 11, Y: 2, Z: 20},
+		Quantity:     10,
+	}
+	writeDone := make(chan struct{})
+	go func() {
+		server.broadcastGroundItemSpawned(item)
+		close(writeDone)
+	}()
+
+	if err := clientConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	var got response
+	if err := json.NewDecoder(clientConn).Decode(&got); err != nil {
+		t.Fatalf("read ground item spawn event: %v", err)
+	}
+	<-writeDone
+
+	if got.Type != "ground_item_spawned" {
+		t.Fatalf("event type = %q, want ground_item_spawned", got.Type)
+	}
+	if got.Item == nil || got.Item.ID != item.ID ||
+		got.Item.ItemTemplate != item.ItemTemplate || got.Item.Quantity != item.Quantity {
+		t.Fatalf("unexpected ground item in spawn event: %+v", got.Item)
 	}
 }
 
