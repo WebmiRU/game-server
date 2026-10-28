@@ -200,7 +200,7 @@ func (s *Server) seedTestMonsters() {
 		x, z                 float64
 	}{
 		{id: "1", name: "Enemy 1", templateID: "test-cube-enemy", x: 392.0, z: 478.0},
-		{id: "2", name: "Enemy 2", templateID: "test-sphere-enemy", x: 401.0, z: 482.0},
+		{id: "2", name: "Smiley", templateID: "test-sphere-enemy", x: 394.0, z: 481.0},
 	}
 
 	for _, seed := range seeds {
@@ -250,6 +250,10 @@ func (s *Server) seedTestMonsters() {
 			Collider:         collider,
 		}
 		s.monsterSpawnIDByEntity[monster.ID] = monster.ID
+		s.logger.Printf(
+			"test monster initialized: id=%q template=%q position=(%.2f, %.2f, %.2f)",
+			monster.ID, monster.TemplateID, monster.Position.X, monster.Position.Y, monster.Position.Z,
+		)
 	}
 
 	s.logger.Printf("test monsters initialized: count=%d", len(s.monsters))
