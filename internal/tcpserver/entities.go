@@ -169,7 +169,7 @@ type GroundItemState struct {
 	Name          string         `json:"name"`
 	Position      worldmap.Vec3  `json:"position"`
 	Quantity      int            `json:"quantity"`
-	SpawnPosition *worldmap.Vec3 `json:"spawnPosition,omitempty"
+	SpawnPosition *worldmap.Vec3 `json:"spawnPosition,omitempty"`
 }
 // TargetReference identifies a live entity selected by one player.
 // References are server-owned runtime state and are intentionally not persisted with transforms.
