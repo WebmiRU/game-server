@@ -98,8 +98,11 @@ type Server struct {
 	monsterSpawnIDByEntity map[string]string
 	groundItems            map[string]GroundItemState
 
-	targetsMu    sync.RWMutex
-	playerTargets map[string]TargetReference
+	targetsMu              sync.RWMutex
+	playerTargets          map[string]TargetReference
+	pendingPickupTargets   map[string]string // protected by targetsMu
+	inventoryMu            sync.RWMutex
+	playerInventories      map[string][]InventoryStack
 
 	// Effective per-player attack speed is runtime state (attacks per second), so buffs
 	// and debuffs can change it without persisting temporary modifiers to disk.
@@ -170,8 +173,10 @@ func New(config Config) *Server {
 		monsterSpawnPoints:     make(map[string]MonsterSpawnPoint),
 		monsterSpawnIDByEntity: make(map[string]string),
 		groundItems:            make(map[string]GroundItemState),
-		playerTargets:     make(map[string]TargetReference),
-		attackSpeeds:      make(map[string]float64),
+		playerTargets:        make(map[string]TargetReference),
+		pendingPickupTargets: make(map[string]string),
+		playerInventories:    make(map[string][]InventoryStack),
+		attackSpeeds:         make(map[string]float64),
 		lastAttackAt:      make(map[string]time.Time),
 		connections:       make(map[net.Conn]struct{}),
 	}
@@ -282,6 +287,9 @@ type response struct {
 	Monsters        []MonsterState      `json:"monsters,omitempty"`
 	Monster         *MonsterState       `json:"monster,omitempty"`
 	Items           []GroundItemState   `json:"items,omitempty"`
+	ItemID          string              `json:"itemId,omitempty"`
+	ItemName        string              `json:"itemName,omitempty"`
+	Inventory       []InventoryStack   `json:"inventory,omitempty"`
 }
 
 // ListenAndServe starts the TCP listener and exits when ctx is cancelled or the listener fails.
@@ -1075,6 +1083,7 @@ func (s *Server) handleWorldInterest(conn net.Conn, playerID string, req request
 		PlayerMaxHealth:  state.MaxHealth,
 		Monsters:         monsters,
 		Items:            items,
+		Inventory:        s.inventorySnapshot(playerID),
 		AttackSpeed:      s.PlayerAttackSpeed(playerID),
 	})
 }
@@ -1149,13 +1158,26 @@ func (s *Server) broadcastMonsterStateUpdated(monster MonsterState, at time.Time
 
 func (s *Server) handleSetTarget(conn net.Conn, playerID string, req request) error {
 	target, success, message := s.setPlayerTarget(playerID, req.TargetType, req.TargetID)
-	return s.writeResponse(conn, response{
+	if err := s.writeResponse(conn, response{
 		Type:     "target_result",
 		Success:  boolPointer(success),
 		Message:  message,
 		PlayerID: playerID,
 		Target:   target,
-	})
+	}); err != nil {
+		return err
+	}
+
+	// A target request can arrive after the player has already reached the item.
+	// Check once here as well as after every accepted movement update.
+	if success && strings.EqualFold(strings.TrimSpace(req.TargetType), "item") {
+		if state, exists := s.storedPlayerState(playerID); exists {
+			if item, inventory, pickedUp := s.completePendingPickup(playerID, state.Position); pickedUp {
+				s.broadcastItemPickedUp(playerID, item, inventory)
+			}
+		}
+	}
+	return nil
 }
 
 // setPlayerTarget validates the requested reference and atomically replaces this player's target.
@@ -1169,20 +1191,28 @@ func (s *Server) setPlayerTarget(playerID, targetType, targetID string) (*Target
 
 	if targetType == "" && targetID == "" {
 		delete(s.playerTargets, playerID)
+		delete(s.pendingPickupTargets, playerID)
 		return nil, true, "target_cleared"
 	}
 	if targetType == "" || targetID == "" {
 		delete(s.playerTargets, playerID)
+		delete(s.pendingPickupTargets, playerID)
 		return nil, false, "invalid_target_reference"
 	}
 
 	target, exists := s.resolveTargetLocked(playerID, targetType, targetID)
 	if !exists {
 		delete(s.playerTargets, playerID)
+		delete(s.pendingPickupTargets, playerID)
 		return nil, false, "target_not_found"
 	}
 
 	s.playerTargets[playerID] = target
+	if target.Type == "item" {
+		s.pendingPickupTargets[playerID] = target.ID
+	} else {
+		delete(s.pendingPickupTargets, playerID)
+	}
 	return &target, true, "target_set"
 }
 
@@ -1251,9 +1281,160 @@ func (s *Server) clearTargetReferences(targetType, targetID string) {
 	for ownerID, target := range s.playerTargets {
 		if target.Type == targetType && target.ID == targetID {
 			delete(s.playerTargets, ownerID)
+			delete(s.pendingPickupTargets, ownerID)
+		}
+	}
+	for ownerID, pendingID := range s.pendingPickupTargets {
+		if targetType == "item" && pendingID == targetID {
+			delete(s.pendingPickupTargets, ownerID)
 		}
 	}
 	s.targetsMu.Unlock()
+}
+
+// completePendingPickup transfers a clicked ground item only when the server-accepted
+// player position is inside the configured pickup radius. Both the target intent and
+// ground-item registry are locked so two players cannot take the same item.
+func (s *Server) completePendingPickup(playerID string, position worldmap.Vec3) (GroundItemState, []InventoryStack, bool) {
+	s.targetsMu.Lock()
+	defer s.targetsMu.Unlock()
+
+	itemID, hasIntent := s.pendingPickupTargets[playerID]
+	if !hasIntent {
+		return GroundItemState{}, nil, false
+	}
+
+	s.entitiesMu.Lock()
+	item, exists := s.groundItems[itemID]
+	if !exists {
+		s.entitiesMu.Unlock()
+		delete(s.pendingPickupTargets, playerID)
+		if target, hasTarget := s.playerTargets[playerID]; hasTarget && target.Type == "item" && target.ID == itemID {
+			delete(s.playerTargets, playerID)
+		}
+		return GroundItemState{}, nil, false
+	}
+
+	distance := math.Hypot(
+		math.Hypot(position.X-item.Position.X, position.Y-item.Position.Y),
+		position.Z-item.Position.Z,
+	)
+	if distance > ItemPickupRadius {
+		s.entitiesMu.Unlock()
+		return GroundItemState{}, nil, false
+	}
+
+	delete(s.groundItems, itemID)
+	s.entitiesMu.Unlock()
+
+	for ownerID, target := range s.playerTargets {
+		if target.Type == "item" && target.ID == itemID {
+			delete(s.playerTargets, ownerID)
+			delete(s.pendingPickupTargets, ownerID)
+		}
+	}
+	for ownerID, pendingID := range s.pendingPickupTargets {
+		if pendingID == itemID {
+			delete(s.pendingPickupTargets, ownerID)
+		}
+	}
+
+	inventory := s.addItemToInventory(playerID, item)
+	return item, inventory, true
+}
+
+// addItemToInventory stores an item instance in the player's prototype inventory.
+func (s *Server) addItemToInventory(playerID string, item GroundItemState) []InventoryStack {
+	definition := ResolveItemDefinition(item.ItemTemplate, item.Name)
+	quantity := item.Quantity
+	if quantity < 1 {
+		quantity = 1
+	}
+
+	s.inventoryMu.Lock()
+	inventory := append([]InventoryStack(nil), s.playerInventories[playerID]...)
+	newStack := InventoryStack{
+		ItemTemplate: definition.TemplateID,
+		Name:         definition.Name,
+		Category:     definition.Category,
+		Stackable:    definition.Stackable,
+		Quantity:     quantity,
+	}
+
+	if definition.Stackable {
+		merged := false
+		for index := range inventory {
+			if inventory[index].ItemTemplate == definition.TemplateID {
+				inventory[index].Quantity += quantity
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			inventory = append(inventory, newStack)
+		}
+	} else {
+		for count := 0; count < quantity; count++ {
+			unit := newStack
+			unit.Quantity = 1
+			inventory = append(inventory, unit)
+		}
+	}
+
+	s.playerInventories[playerID] = inventory
+	result := append([]InventoryStack(nil), inventory...)
+	s.inventoryMu.Unlock()
+	return result
+}
+
+// inventorySnapshot returns a defensive copy so network encoding never shares mutable state.
+func (s *Server) inventorySnapshot(playerID string) []InventoryStack {
+	s.inventoryMu.RLock()
+	result := append([]InventoryStack(nil), s.playerInventories[playerID]...)
+	s.inventoryMu.RUnlock()
+	return result
+}
+
+// broadcastItemPickedUp removes the item from nearby clients and reveals inventory only to its owner.
+func (s *Server) broadcastItemPickedUp(playerID string, item GroundItemState, inventory []InventoryStack) {
+	type recipient struct {
+		playerID string
+		conn     net.Conn
+	}
+
+	recipients := make([]recipient, 0)
+	s.playersMu.RLock()
+	for recipientID, conn := range s.playerSessions {
+		state, hasState := s.playerStates[recipientID]
+		if conn == nil || !hasState || !state.Online {
+			continue
+		}
+		if recipientID != playerID {
+			radius, hasInterest := s.worldInterestRanges[recipientID]
+			if !hasInterest || !positionWithinRange(state.Position, item.Position, radius) {
+				continue
+			}
+		}
+		recipients = append(recipients, recipient{playerID: recipientID, conn: conn})
+	}
+	s.playersMu.RUnlock()
+
+	for _, recipient := range recipients {
+		message := response{
+			Type:     "item_picked_up",
+			Success:  boolPointer(true),
+			PlayerID: playerID,
+			ItemID:   item.ID,
+			ItemName: item.Name,
+		}
+		if recipient.playerID == playerID {
+			message.Inventory = append([]InventoryStack(nil), inventory...)
+		}
+		if err := s.writeResponse(recipient.conn, message); err != nil {
+			s.logger.Printf("WARNING: cannot publish picked-up item %q to player %q: %v",
+				item.ID, recipient.playerID, err)
+		}
+	}
 }
 
 func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) error {
@@ -1359,6 +1540,10 @@ func (s *Server) handlePlayerState(conn net.Conn, playerID string, req request) 
 	s.stateVersion++
 	s.playersMu.Unlock()
 	s.movementMu.Unlock()
+
+	if item, inventory, pickedUp := s.completePendingPickup(playerID, acceptedPosition); pickedUp {
+		s.broadcastItemPickedUp(playerID, item, inventory)
+	}
 
 	s.logPlayerState(state)
 
