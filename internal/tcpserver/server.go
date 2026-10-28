@@ -445,9 +445,11 @@ func (s *Server) removePlayerState(playerID string, conn net.Conn) {
 
 	s.targetsMu.Lock()
 	delete(s.playerTargets, playerID)
+	delete(s.pendingPickupTargets, playerID)
 	for ownerID, target := range s.playerTargets {
 		if target.Type == "player" && target.ID == playerID {
 			delete(s.playerTargets, ownerID)
+			delete(s.pendingPickupTargets, ownerID)
 		}
 	}
 	s.targetsMu.Unlock()
