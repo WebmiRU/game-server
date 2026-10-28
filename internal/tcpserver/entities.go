@@ -30,6 +30,9 @@ const (
 const (
 	ColliderCylinder = "cylinder"
 	ColliderBox      = "box"
+
+	// ItemPickupRadius is the server-authoritative distance at which a commanded pickup completes.
+	ItemPickupRadius = 0.5
 )
 
 // ColliderDefinition is shared by server simulation and client collision proxies.
@@ -99,7 +102,60 @@ type MonsterSpawnPoint struct {
 	RespawnAt        time.Time
 }
 
-// GroundItemState is a server-owned item lying in the world.
+// ItemDefinition is an in-memory item-template prototype. Definitions can later be loaded from a database.
+type ItemDefinition struct {
+	TemplateID string `json:"templateId"`
+	Name       string `json:"name"`
+	Category   string `json:"category"`
+	Stackable  bool   `json:"stackable"`
+}
+
+// InventoryStack is a stack of a template owned by one player. Quantity remains server-owned.
+type InventoryStack struct {
+	ItemTemplate string `json:"itemTemplate"`
+	Name         string `json:"name"`
+	Category     string `json:"category"`
+	Stackable    bool   `json:"stackable"`
+	Quantity     int    `json:"quantity"`
+}
+
+// builtInItemDefinitions is the prototype registry until item templates are stored in a database.
+var builtInItemDefinitions = map[string]ItemDefinition{
+	"soulshot-d-grade": {
+		TemplateID: "soulshot-d-grade",
+		Name:       "Soulshot (D-grade)",
+		Category:   "consumable",
+		Stackable:  true,
+	},
+}
+
+// ResolveItemDefinition returns a registered prototype or a safe generic definition for future item types.
+func ResolveItemDefinition(templateID, fallbackName string) ItemDefinition {
+	templateID = strings.ToLower(strings.TrimSpace(templateID))
+	if definition, exists := builtInItemDefinitions[templateID]; exists {
+		return definition
+	}
+
+	name := strings.TrimSpace(fallbackName)
+	if templateID == "" {
+		templateID = strings.Trim(strings.ReplaceAll(strings.Join(strings.Fields(strings.ToLower(name)), "-"), "--", "-"), "-")
+	}
+	if templateID == "" {
+		templateID = "unknown-item"
+	}
+	if name == "" {
+		name = templateID
+	}
+
+	return ItemDefinition{
+		TemplateID: templateID,
+		Name:       name,
+		Category:   "misc",
+		Stackable:  false,
+	}
+}
+
+// GroundItemState is a server-owned item instance lying in the world.
 type GroundItemState struct {
 	ID           string        `json:"id"`
 	ItemTemplate string        `json:"itemTemplate"`
@@ -107,7 +163,6 @@ type GroundItemState struct {
 	Position     worldmap.Vec3 `json:"position"`
 	Quantity     int           `json:"quantity"`
 }
-
 // TargetReference identifies a live entity selected by one player.
 // References are server-owned runtime state and are intentionally not persisted with transforms.
 type TargetReference struct {
@@ -440,6 +495,12 @@ func (s *Server) AddGroundItem(item GroundItemState) bool {
 	item.ID = strings.TrimSpace(item.ID)
 	if item.ID == "" || !s.validEntityPosition(item.Position) || item.Quantity < 1 {
 		return false
+	}
+
+	definition := ResolveItemDefinition(item.ItemTemplate, item.Name)
+	item.ItemTemplate = definition.TemplateID
+	if strings.TrimSpace(item.Name) == "" {
+		item.Name = definition.Name
 	}
 
 	s.entitiesMu.Lock()
