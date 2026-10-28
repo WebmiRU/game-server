@@ -272,7 +272,7 @@ func TestClearingItemTargetCancelsPickupIntent(t *testing.T) {
 	}
 }
 
-func TestDropInventoryStackUsesThrowDirectionAndBroadcastsGroundItem(t *testing.T) {
+func TestDropInventoryStackUsesRequestedCoordinatesAndBroadcastsGroundItem(t *testing.T) {
 	server := newItemTestServer()
 	conn, scanner, _ := startPipeConnectionWithServer(t, server)
 	authenticateTestPlayer(t, conn, scanner)
@@ -329,7 +329,7 @@ func TestDropInventoryStackUsesThrowDirectionAndBroadcastsGroundItem(t *testing.
 		t.Fatalf("landing distance = %.3f m, want 1.5 m", horizontalDistance)
 	}
 	if dx <= 0 || math.Abs(dz) > 1e-6 {
-		t.Fatalf("drop did not follow +X throw direction: player=(%.2f, %.2f), item=(%.2f, %.2f)",
+		t.Fatalf("drop did not reach the requested +X destination: player=(%.2f, %.2f), item=(%.2f, %.2f)",
 			playerPosition.X, playerPosition.Z, item.Position.X, item.Position.Z)
 	}
 	if math.Hypot(dx, math.Hypot(item.Position.Y-playerPosition.Y, dz)) > 2.0 {
@@ -359,10 +359,11 @@ func TestDropInventoryStackUsesThrowDirectionAndBroadcastsGroundItem(t *testing.
 
 func TestDropInventoryStackRejectsQuantityAboveInventory(t *testing.T) {
 	server := newItemTestServer()
+	playerPosition := worldmap.Vec3{X: 10, Y: 3.05, Z: 20}
 	server.playersMu.Lock()
 	server.playerStates["player1"] = PlayerState{
 		PlayerID: "player1",
-		Position: worldmap.Vec3{X: 10, Y: 3.05, Z: 20},
+		Position: playerPosition,
 		Rotation: PlayerRotation{W: 1},
 		Online:   true,
 	}
