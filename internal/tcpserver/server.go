@@ -1317,8 +1317,11 @@ func (s *Server) completePendingPickup(playerID string, position worldmap.Vec3) 
 		return GroundItemState{}, nil, false
 	}
 
+	// PlayerState.Position is the character-controller root (about one metre above
+	// the ground), while GroundItemState.Position is the item's ground position.
+	// Pickup distance is therefore measured horizontally on the ground plane.
 	distance := math.Hypot(
-		math.Hypot(position.X-item.Position.X, position.Y-item.Position.Y),
+		position.X-item.Position.X,
 		position.Z-item.Position.Z,
 	)
 	if distance > ItemPickupRadius {
