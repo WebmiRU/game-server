@@ -200,6 +200,10 @@ type request struct {
 	MoveTargetZ      float64 `json:"moveTargetZ,omitempty"`
 	TargetType       string  `json:"targetType,omitempty"`
 	TargetID         string  `json:"targetId,omitempty"`
+	ItemTemplate     string  `json:"itemTemplate,omitempty"`
+	Quantity         int     `json:"quantity,omitempty"`
+	DirectionX       float64 `json:"directionX,omitempty"`
+	DirectionZ       float64 `json:"directionZ,omitempty"`
 	RequestID        int     `json:"requestId,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
@@ -1018,6 +1022,29 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req 
 
 	case "attack":
 		return s.handleAttack(conn, playerID, req)
+
+	case "drop_item":
+		item, inventory, success, reason := s.dropInventoryStack(
+			playerID, req.ItemTemplate, req.Quantity, req.DirectionX, req.DirectionZ)
+		if !success {
+			return s.writeResponse(conn, response{
+				Type:    "item_dropped",
+				Success: boolPointer(false),
+				Message: reason,
+			})
+		}
+		if err := s.writeResponse(conn, response{
+			Type:      "item_dropped",
+			Success:   boolPointer(true),
+			Message:   "item_dropped",
+			PlayerID:  playerID,
+			Item:      &item,
+			Inventory: inventory,
+		}); err != nil {
+			return err
+		}
+		s.broadcastGroundItemSpawned(item)
+		return nil
 
 	case "height_at":
 		if req.X == nil || req.Z == nil {
