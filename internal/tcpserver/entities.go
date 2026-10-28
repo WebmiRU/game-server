@@ -535,12 +535,12 @@ func (s *Server) RemoveGroundItem(id string) bool {
 }
 
 // dropInventoryStack removes the requested quantity from the authoritative inventory and
-// creates one ground item in the same transaction. The landing point follows the supplied
-// horizontal throw direction and is always at most 1.5 m from the player.
+// creates one ground item in the same transaction. The client's requested world point is
+// clamped to a maximum horizontal radius of two metres around the player.
 func (s *Server) dropInventoryStack(
 	playerID, itemTemplate string,
 	quantity int,
-	directionX, directionZ float64,
+	requestedX, requestedZ float64,
 ) (GroundItemState, []InventoryStack, bool, string) {
 	player, exists := s.storedPlayerState(playerID)
 	if !exists || !player.Online {
@@ -554,35 +554,12 @@ func (s *Server) dropInventoryStack(
 	if quantity < 1 {
 		return GroundItemState{}, nil, false, "quantity_must_be_positive"
 	}
+	if !finiteNumber(requestedX) || !finiteNumber(requestedZ) {
+		return GroundItemState{}, nil, false, "invalid_drop_coordinates"
+	}
 	canonicalTemplate := ResolveItemDefinition(itemTemplate, "").TemplateID
 
-	// A valid mouse direction is preferred. Missing/degenerate directions use the
-	// player's last server-accepted facing so the drop is still deterministic.
-	directionLength := math.Hypot(directionX, directionZ)
-	if !finiteNumber(directionX) || !finiteNumber(directionZ) ||
-		!finiteNumber(directionLength) || directionLength < 1e-6 {
-		qx, qy, qz, qw := player.Rotation.X, player.Rotation.Y, player.Rotation.Z, player.Rotation.W
-		rotationLength := math.Sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
-		if !finiteNumber(rotationLength) || rotationLength < 1e-9 {
-			qx, qy, qz, qw = 0, 0, 0, 1
-		} else {
-			qx /= rotationLength
-			qy /= rotationLength
-			qz /= rotationLength
-			qw /= rotationLength
-		}
-		directionX = 2 * (qw*qy + qx*qz)
-		directionZ = 1 - 2*(qy*qy+qz*qz)
-		directionLength = math.Hypot(directionX, directionZ)
-	}
-	if !finiteNumber(directionLength) || directionLength < 1e-6 {
-		directionX, directionZ, directionLength = 0, 1, 1
-	}
-	directionX /= directionLength
-	directionZ /= directionLength
-
-	// PlayerState.Position is the character root, approximately 1.05 m above terrain.
-	// Place the take-off at 2 m above ground, then land 1.5 m along the throw direction.
+	// PlayerState.Position is the character root, approximately 1.05 m above the ground.
 	groundY := player.Position.Y - 1.05
 	if s.world != nil {
 		var insideWorld bool
@@ -592,13 +569,31 @@ func (s *Server) dropInventoryStack(
 		}
 	}
 
+	// Clamp the requested terrain point on the horizontal plane. The player may drag
+	// to a distant point on screen; this keeps the actual item within 2 m of the player.
+	deltaX := requestedX - player.Position.X
+	deltaZ := requestedZ - player.Position.Z
+	requestedDistance := math.Hypot(deltaX, deltaZ)
+	const maxDropDistance = 2.0
+	if !finiteNumber(requestedDistance) {
+		return GroundItemState{}, nil, false, "invalid_drop_coordinates"
+	}
+	if requestedDistance > maxDropDistance {
+		scale := maxDropDistance / requestedDistance
+		deltaX *= scale
+		deltaZ *= scale
+	}
+
+	// Prefer the clamped destination. If it lies just beyond the loaded terrain edge,
+	// step back toward the player until a valid ground point is found.
 	landing := worldmap.Vec3{}
 	landingFound := false
-	for _, distance := range []float64{1.5, 1.25, 1.0, 0.75, 0.5, 0.25, 0.0} {
+	for step := 16; step >= 0; step-- {
+		fraction := float64(step) / 16.0
 		landing = worldmap.Vec3{
-			X: player.Position.X + directionX*distance,
+			X: player.Position.X + deltaX*fraction,
 			Y: groundY,
-			Z: player.Position.Z + directionZ*distance,
+			Z: player.Position.Z + deltaZ*fraction,
 		}
 		if s.world != nil {
 			height, insideWorld := s.world.HeightAtWorld(landing.X, landing.Z)
