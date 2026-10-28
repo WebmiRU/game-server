@@ -58,6 +58,19 @@ func main() {
 		MovementRetryTimeout: *movementRetryTimeout,
 	})
 
+    // Preview a blue D-grade soulshot near the default player spawn while inventory work is in progress.
+    if y, ok := loadedWorld.HeightAtWorld(496.0, 500.0); ok {
+        if !server.AddGroundItem(tcpserver.GroundItemState{
+            ID: "demo-soulshot-d",
+            ItemTemplate: "soulshot-d-grade",
+            Name: "Soulshot (D-grade)",
+            Position: worldmap.Vec3{X: 496.0, Y: y, Z: 500.0},
+            Quantity: 1,
+        }) {
+            appLogger.Printf("WARNING: could not add demo D-grade soulshot to the world")
+        }
+    }
+
 	appLogger.Printf("starting game server (protocol v%d)", tcpserver.ProtocolVersion)
 	if err := server.ListenAndServe(ctx); err != nil {
 		fatalErrorf("game server stopped with error: %v", err)
