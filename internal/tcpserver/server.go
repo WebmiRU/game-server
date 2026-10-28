@@ -200,10 +200,10 @@ type request struct {
 	MoveTargetZ      float64 `json:"moveTargetZ,omitempty"`
 	TargetType       string  `json:"targetType,omitempty"`
 	TargetID         string  `json:"targetId,omitempty"`
-	ItemTemplate     string  `json:"itemTemplate,omitempty"`
-	Quantity         int     `json:"quantity,omitempty"`
-	DirectionX       float64 `json:"directionX,omitempty"`
-	DirectionZ       float64 `json:"directionZ,omitempty"`
+	ItemTemplate     string   `json:"itemTemplate,omitempty"`
+	Quantity         int      `json:"quantity,omitempty"`
+	DropX            *float64 `json:"dropX,omitempty"`
+	DropZ            *float64 `json:"dropZ,omitempty"`
 	RequestID        int     `json:"requestId,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
@@ -1024,8 +1024,15 @@ func (s *Server) handleAuthenticatedRequest(conn net.Conn, playerID string, req 
 		return s.handleAttack(conn, playerID, req)
 
 	case "drop_item":
+		if req.DropX == nil || req.DropZ == nil {
+			return s.writeResponse(conn, response{
+				Type:    "item_dropped",
+				Success: boolPointer(false),
+				Message: "drop_coordinates_required",
+			})
+		}
 		item, inventory, success, reason := s.dropInventoryStack(
-			playerID, req.ItemTemplate, req.Quantity, req.DirectionX, req.DirectionZ)
+			playerID, req.ItemTemplate, req.Quantity, *req.DropX, *req.DropZ)
 		if !success {
 			return s.writeResponse(conn, response{
 				Type:    "item_dropped",
