@@ -47,6 +47,8 @@ type wireResponse struct {
 	Monsters        []MonsterState      `json:"monsters"`
 	Monster         *MonsterState       `json:"monster"`
 	Items           []GroundItemState   `json:"items"`
+	Item            *GroundItemState    `json:"item"`
+	Inventory       []InventoryStack    `json:"inventory"`
 }
 
 type testRequest struct {
@@ -62,6 +64,10 @@ type testRequest struct {
 	MoveTargetZ float64 `json:"moveTargetZ,omitempty"`
 	TargetType string  `json:"targetType,omitempty"`
 	TargetID   string  `json:"targetId,omitempty"`
+	ItemTemplate string `json:"itemTemplate,omitempty"`
+	Quantity int `json:"quantity,omitempty"`
+	DirectionX float64 `json:"directionX,omitempty"`
+	DirectionZ float64 `json:"directionZ,omitempty"`
 	RequestID  int     `json:"requestId,omitempty"`
 	RotationX *float64 `json:"rotationX,omitempty"`
 	RotationY *float64 `json:"rotationY,omitempty"`
