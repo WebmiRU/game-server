@@ -3,6 +3,7 @@ package tcpserver
 import (
 	"io"
 	"log"
+	"math"
 	"testing"
 
 	"game-server/internal/worldmap"
@@ -22,6 +23,87 @@ func addSoulshotForTest(t *testing.T, server *Server, id string, position worldm
 		Quantity:     quantity,
 	}) {
 		t.Fatalf("AddGroundItem(%q) failed", id)
+	}
+}
+
+func TestMonsterDeathDropsOneTenCountSoulshotCapsule(t *testing.T) {
+	tests := []struct {
+		name       string
+		templateID string
+		wantItem   string
+		wantName   string
+	}{
+		{name: "Enemy-2 drops D-grade", templateID: "test-sphere-enemy", wantItem: "soulshot-d-grade", wantName: "Soulshot (D-grade)"},
+		{name: "box dog drops C-grade", templateID: "test-cube-enemy", wantItem: "soulshot-c-grade", wantName: "Soulshot (C-grade)"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := newItemTestServer()
+			position := worldmap.Vec3{X: 10, Y: 2, Z: 20}
+			monster := MonsterState{
+				ID:         "loot-test-monster",
+				TemplateID: test.templateID,
+				Name:       test.name,
+				Position:   position,
+				Health:     20,
+				MaxHealth:  20,
+				Alive:      true,
+				Rotation:   PlayerRotation{W: 1},
+			}
+			if !server.UpsertMonster(monster) {
+				t.Fatal("could not add test monster")
+			}
+
+			// Non-lethal damage must not produce loot.
+			if hit, ok := server.applyMonsterDamage(monster.ID, 1); !ok || !hit.Alive {
+				t.Fatalf("first hit unexpectedly killed monster: %+v, ok=%v", hit, ok)
+			}
+			server.entitiesMu.RLock()
+			preKillDrops := len(server.groundItems)
+			server.entitiesMu.RUnlock()
+			if preKillDrops != 0 {
+				t.Fatalf("monster dropped loot before death: %d ground items", preKillDrops)
+			}
+
+			dead, ok := server.applyMonsterDamage(monster.ID, 100)
+			if !ok || dead.Alive {
+				t.Fatalf("lethal hit did not kill monster: %+v, ok=%v", dead, ok)
+			}
+			if _, ok := server.applyMonsterDamage(monster.ID, 100); ok {
+				t.Fatal("dead monster accepted damage again")
+			}
+
+			server.entitiesMu.RLock()
+			drops := make([]GroundItemState, 0, len(server.groundItems))
+			for _, item := range server.groundItems {
+				drops = append(drops, item)
+			}
+			server.entitiesMu.RUnlock()
+
+			if len(drops) != 1 {
+				t.Fatalf("death created %d physical drops, want exactly one capsule: %+v", len(drops), drops)
+			}
+			drop := drops[0]
+			if drop.ItemTemplate != test.wantItem || drop.Name != test.wantName || drop.Quantity != 10 {
+				t.Fatalf("unexpected loot stack: %+v", drop)
+			}
+			if drop.SpawnPosition == nil {
+				t.Fatal("loot has no launch position at monster head height")
+			}
+
+			wantHeadY := position.Y + colliderForMonster(monster).Height
+			if math.Abs(drop.SpawnPosition.Y-wantHeadY) > 1e-9 {
+				t.Fatalf("launch height = %.3f, want monster top at %.3f", drop.SpawnPosition.Y, wantHeadY)
+			}
+			distance := math.Hypot(drop.Position.X-position.X, drop.Position.Z-position.Z)
+			if distance < 0.9 || distance > 2.6 {
+				t.Fatalf("landing point is not scattered around the collider boundary: distance=%.3f", distance)
+			}
+			if math.Abs(drop.Position.Y-position.Y) > 1e-9 {
+				t.Fatalf("landing Y = %.3f, want ground Y %.3f in test world", drop.Position.Y, position.Y)
+			}
+		})
 	}
 }
 
