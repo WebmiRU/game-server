@@ -936,7 +936,7 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 	server := New(Config{Logger: log.New(io.Discard, "", 0)})
 	if !server.UpsertMonster(MonsterState{
 		ID: "target-near", TemplateID: "test-sphere-enemy", Name: "Target",
-		Position: worldmap.Vec3{X: 11.7, Y: 50, Z: 10},
+		Position: worldmap.Vec3{X: 12.9, Y: 50, Z: 10},
 		Health: 100, MaxHealth: 100, Alive: true,
 	}) {
 		t.Fatal("failed to add nearby attack target")
