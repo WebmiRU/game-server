@@ -1159,6 +1159,37 @@ func (s *Server) broadcastMonsterStateUpdated(monster MonsterState, at time.Time
 	}
 }
 
+// broadcastGroundItemSpawned immediately reveals a newly created ground drop to
+// connected clients whose current world-interest radius contains the landing point.
+// Regular world snapshots still reconcile removals and any missed events.
+func (s *Server) broadcastGroundItemSpawned(item GroundItemState) {
+	type recipient struct {
+		conn net.Conn
+	}
+	recipients := make([]recipient, 0)
+	s.playersMu.RLock()
+	for playerID, conn := range s.playerSessions {
+		state, hasState := s.playerStates[playerID]
+		radius, hasInterest := s.worldInterestRanges[playerID]
+		if conn == nil || !hasState || !state.Online || !hasInterest ||
+			!positionWithinRange(state.Position, item.Position, radius) {
+			continue
+		}
+		recipients = append(recipients, recipient{conn: conn})
+	}
+	s.playersMu.RUnlock()
+
+	for _, recipient := range recipients {
+		if err := s.writeResponse(recipient.conn, response{
+			Type:    "ground_item_spawned",
+			Success: boolPointer(true),
+			Item:    &item,
+		}); err != nil {
+			logging.Errorf(s.logger, "cannot broadcast ground item %q: %v", item.ID, err)
+		}
+	}
+}
+
 func (s *Server) handleSetTarget(conn net.Conn, playerID string, req request) error {
 	target, success, message := s.setPlayerTarget(playerID, req.TargetType, req.TargetID)
 	if err := s.writeResponse(conn, response{
