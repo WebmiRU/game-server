@@ -970,7 +970,32 @@ func TestAttackCommandValidatesRangeAndCooldown(t *testing.T) {
 	sendRequest(t, conn, testRequest{
 		Type: "attack", TargetType: "monster", TargetID: "target-near", RequestID: 101,
 	})
+	attackStartedAt := time.Now()
+	attackStarted := readWireResponse(t, scanner)
+	if attackStarted.Type != "attack_started" {
+		t.Fatalf("attack start response type = %q, want attack_started", attackStarted.Type)
+	}
+	assertSuccess(t, attackStarted, true)
+	if attackStarted.RequestID != 101 || attackStarted.Target == nil || attackStarted.Target.ID != "target-near" {
+		t.Fatalf("attack start response = %+v, want request 101 for target-near", attackStarted)
+	}
+	if math.Abs(attackStarted.AttackSpeed-2.0) > 0.0001 {
+		t.Fatalf("attack start speed = %.3f, want 2.0", attackStarted.AttackSpeed)
+	}
+
+	// The acknowledgement starts the animation but must not apply damage yet.
+	server.entitiesMu.RLock()
+	monsterBeforeImpact := server.monsters["target-near"]
+	server.entitiesMu.RUnlock()
+	if monsterBeforeImpact.Health != 100 {
+		t.Fatalf("monster health immediately after attack_started = %d, want 100 before impact",
+			monsterBeforeImpact.Health)
+	}
+
 	attackResponse := readWireResponse(t, scanner)
+	if elapsed := time.Since(attackStartedAt); elapsed < 400*time.Millisecond {
+		t.Fatalf("attack result arrived after %v, want the 450ms wind-up to elapse", elapsed)
+	}
 	if attackResponse.Type != "attack_result" {
 		t.Fatalf("attack response type = %q, want attack_result", attackResponse.Type)
 	}
