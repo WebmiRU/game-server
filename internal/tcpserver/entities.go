@@ -730,7 +730,7 @@ func (s *Server) worldSnapshot(requestingPlayerID string, center worldmap.Vec3, 
 			continue
 		}
 		monster = s.monsterSnapshotState(monster, now)
-		monster.Collider = playerCollisionColliderForMonster(monster)
+		monster.Collider = colliderForMonster(monster)
 		nearbyMonsters = append(nearbyMonsters, monster)
 	}
 	for _, item := range s.groundItems {
