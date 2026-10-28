@@ -58,7 +58,13 @@ func TestGroundItemPickupRequiresApproachWithinHalfMetre(t *testing.T) {
 		t.Fatal("ground item disappeared while the player was outside pickup radius")
 	}
 
-	insideRadius := worldmap.Vec3{X: position.X + ItemPickupRadius - 0.01, Y: position.Y, Z: position.Z}
+	// The accepted player position represents the character root, not ground level.
+	// Keep a realistic vertical offset to ensure pickup uses horizontal ground distance.
+	insideRadius := worldmap.Vec3{
+		X: position.X + ItemPickupRadius - 0.01,
+		Y: position.Y + 1.05,
+		Z: position.Z,
+	}
 	item, inventory, pickedUp := server.completePendingPickup("player1", insideRadius)
 	if !pickedUp {
 		t.Fatal("item was not picked up after the commanded player reached within 0.5 m")
