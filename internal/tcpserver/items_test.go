@@ -302,8 +302,8 @@ func TestDropInventoryStackUsesThrowDirectionAndBroadcastsGroundItem(t *testing.
 		Type:         "drop_item",
 		ItemTemplate: "soulshot-d-grade",
 		Quantity:     10,
-		DirectionX:   1,
-		DirectionZ:   0,
+		DropX:        float64PointerForTest(playerPosition.X + 1.5),
+		DropZ:        float64PointerForTest(playerPosition.Z),
 	})
 
 	dropped := readWireResponse(t, scanner)
@@ -377,7 +377,8 @@ func TestDropInventoryStackRejectsQuantityAboveInventory(t *testing.T) {
 	}}
 	server.inventoryMu.Unlock()
 
-	_, _, success, reason := server.dropInventoryStack("player1", "soulshot-d-grade", 3, 0, 1)
+	_, _, success, reason := server.dropInventoryStack(
+		"player1", "soulshot-d-grade", 3, playerPosition.X, playerPosition.Z+1.5)
 	if success || reason != "insufficient_inventory_quantity" {
 		t.Fatalf("drop of more items than owned: success=%v reason=%q", success, reason)
 	}
@@ -392,6 +393,47 @@ func TestDropInventoryStackRejectsQuantityAboveInventory(t *testing.T) {
 	server.entitiesMu.RUnlock()
 	if dropCount != 0 {
 		t.Fatalf("failed drop created %d ground items, want none", dropCount)
+	}
+}
+
+func TestDropInventoryStackClampsRequestedPointToTwoMetres(t *testing.T) {
+	server := newItemTestServer()
+	playerPosition := worldmap.Vec3{X: 10, Y: 3.05, Z: 20}
+	server.playersMu.Lock()
+	server.playerStates["player1"] = PlayerState{
+		PlayerID: "player1",
+		Position: playerPosition,
+		Rotation: PlayerRotation{W: 1},
+		Online:   true,
+	}
+	server.playersMu.Unlock()
+	server.inventoryMu.Lock()
+	server.playerInventories["player1"] = []InventoryStack{{
+		ItemTemplate: "soulshot-d-grade",
+		Name:         "Soulshot (D-grade)",
+		Category:     "consumable",
+		Stackable:    true,
+		Quantity:     1,
+	}}
+	server.inventoryMu.Unlock()
+
+	item, _, success, reason := server.dropInventoryStack(
+		"player1", "soulshot-d-grade", 1, playerPosition.X+100, playerPosition.Z)
+	if !success {
+		t.Fatalf("dropInventoryStack failed: %s", reason)
+	}
+	distance := math.Hypot(item.Position.X-playerPosition.X, item.Position.Z-playerPosition.Z)
+	if distance > 2.0+1e-6 {
+		t.Fatalf("landing point is %.3f m from player, must be <= 2 m", distance)
+	}
+	if math.Abs(item.Position.X-(playerPosition.X+2.0)) > 1e-6 ||
+		math.Abs(item.Position.Z-playerPosition.Z) > 1e-6 {
+		t.Fatalf("requested distant point wasn't clamped radially: item position=(%.3f, %.3f)",
+			item.Position.X, item.Position.Z)
+	}
+	if item.SpawnPosition == nil ||
+		math.Abs(item.SpawnPosition.Y-item.Position.Y-2.0) > 1e-6 {
+		t.Fatalf("drop launch point must be 2 m above landing point: %+v", item.SpawnPosition)
 	}
 }
 
