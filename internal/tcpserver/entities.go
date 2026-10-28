@@ -530,6 +530,34 @@ func (s *Server) RemoveGroundItem(id string) bool {
 	return exists
 }
 
+// boxBoundaryDistanceAlongDirection returns the radial distance from a box centre to its
+// edge along a unit horizontal direction. This differs from its support radius at oblique angles.
+func boxBoundaryDistanceAlongDirection(size worldmap.Vec3, rotation PlayerRotation, dirX, dirZ float64) float64 {
+	qx, qy, qz, qw := rotation.X, rotation.Y, rotation.Z, rotation.W
+	rotationLength := math.Sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+	if !finiteNumber(rotationLength) || rotationLength < 1e-9 {
+		qx, qy, qz, qw = 0, 0, 0, 1
+	} else {
+		qx /= rotationLength
+		qy /= rotationLength
+		qz /= rotationLength
+		qw /= rotationLength
+	}
+	yaw := math.Atan2(2*(qw*qy+qx*qz), 1-2*(qy*qy+qz*qz))
+	cosYaw, sinYaw := math.Cos(yaw), math.Sin(yaw)
+	localX := dirX*cosYaw - dirZ*sinYaw
+	localZ := dirX*sinYaw + dirZ*cosYaw
+	halfX, halfZ := math.Max(0, size.X)*0.5, math.Max(0, size.Z)*0.5
+	boundary := math.Inf(1)
+	if halfX > 0 && math.Abs(localX) > 1e-9 {
+		boundary = math.Min(boundary, halfX/math.Abs(localX))
+	}
+	if halfZ > 0 && math.Abs(localZ) > 1e-9 {
+		boundary = math.Min(boundary, halfZ/math.Abs(localZ))
+	}
+	return boundary
+}
+
 // spawnMonsterLoot creates one physical capsule representing ten stackable soulshots.
 // Its launch point is the monster's head; the final point is randomly scattered up to one
 // metre outside the horizontal collider boundary and placed on the authoritative terrain.
@@ -561,9 +589,10 @@ func (s *Server) spawnMonsterLoot(monster MonsterState) {
 		dirX, dirZ := math.Cos(angle), math.Sin(angle)
 		boundaryDistance := collider.Radius
 		if collider.Shape == ColliderBox {
-			boundaryDistance = rotatedBoxSupportRadius(collider.Size, monster.Rotation, dirX, dirZ)
+			boundaryDistance = boxBoundaryDistanceAlongDirection(
+				collider.Size, monster.Rotation, dirX, dirZ)
 		}
-		if boundaryDistance < 0.1 {
+		if boundaryDistance < 0.1 || !finiteNumber(boundaryDistance) {
 			boundaryDistance = 0.5
 		}
 		distance := boundaryDistance + 0.15 + rand.Float64()*0.85
