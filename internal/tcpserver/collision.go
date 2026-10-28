@@ -28,6 +28,25 @@ func playerColliderDefinition() ColliderDefinition {
 }
 
 // colliderForMonster returns a validated default if an older call site did not specify a collider.
+// PlayerMonsterHorizontalColliderScale expands only the horizontal footprint of a monster.
+// The visible mesh stays the same size, but the player stops farther away so long melee
+// animations do not swing deep inside the target. Vertical collision height is unchanged.
+const PlayerMonsterHorizontalColliderScale = 1.5
+
+// playerCollisionColliderForMonster returns the server-authoritative collider used for
+// player movement, melee reach and the client collision proxy. It always derives from the
+// stored base collider, so repeated snapshots never multiply the size again.
+func playerCollisionColliderForMonster(monster MonsterState) ColliderDefinition {
+	collider := colliderForMonster(monster)
+	if collider.Shape == ColliderBox {
+		collider.Size.X *= PlayerMonsterHorizontalColliderScale
+		collider.Size.Z *= PlayerMonsterHorizontalColliderScale
+	} else {
+		collider.Radius *= PlayerMonsterHorizontalColliderScale
+	}
+	return collider
+}
+
 func colliderForMonster(monster MonsterState) ColliderDefinition {
 	collider := monster.Collider
 	if collider.Shape == ColliderBox {
@@ -313,7 +332,7 @@ func (s *Server) playerPositionCollides(playerID string, position worldmap.Vec3)
 			// merely because a mob spawned above them.
 			continue
 		}
-		collider := colliderForMonster(monster)
+		collider := playerCollisionColliderForMonster(monster)
 		height := collider.Height
 		if collider.Shape == ColliderBox && collider.Size.Y > 0 {
 			height = collider.Size.Y
@@ -348,7 +367,7 @@ func (s *Server) playerPositionCollides(playerID string, position worldmap.Vec3)
 
 // monsterOverlapsPlayerAt reports a collision for a monster bottom-centred at position.
 func monsterOverlapsPlayerAt(monster MonsterState, position worldmap.Vec3, player PlayerState) bool {
-	collider := colliderForMonster(monster)
+	collider := playerCollisionColliderForMonster(monster)
 	height := collider.Height
 	if collider.Shape == ColliderBox && collider.Size.Y > 0 {
 		height = collider.Size.Y
