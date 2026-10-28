@@ -303,6 +303,7 @@ func TestDropInventoryStackUsesRequestedCoordinatesAndBroadcastsGroundItem(t *te
 		ItemTemplate: "soulshot-d-grade",
 		Quantity:     10,
 		DropX:        float64PointerForTest(playerPosition.X + 1.5),
+		DropY:        float64PointerForTest(playerPosition.Y - 1.05),
 		DropZ:        float64PointerForTest(playerPosition.Z),
 	})
 
@@ -379,7 +380,8 @@ func TestDropInventoryStackRejectsQuantityAboveInventory(t *testing.T) {
 	server.inventoryMu.Unlock()
 
 	_, _, success, reason := server.dropInventoryStack(
-		"player1", "soulshot-d-grade", 3, playerPosition.X, playerPosition.Z+1.5)
+		"player1", "soulshot-d-grade", 3,
+		playerPosition.X, playerPosition.Y-1.05, playerPosition.Z+1.5)
 	if success || reason != "insufficient_inventory_quantity" {
 		t.Fatalf("drop of more items than owned: success=%v reason=%q", success, reason)
 	}
@@ -419,7 +421,8 @@ func TestDropInventoryStackClampsRequestedPointToTwoMetres(t *testing.T) {
 	server.inventoryMu.Unlock()
 
 	item, _, success, reason := server.dropInventoryStack(
-		"player1", "soulshot-d-grade", 1, playerPosition.X+100, playerPosition.Z)
+		"player1", "soulshot-d-grade", 1,
+		playerPosition.X+100, playerPosition.Y-1.05, playerPosition.Z)
 	if !success {
 		t.Fatalf("dropInventoryStack failed: %s", reason)
 	}
