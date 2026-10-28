@@ -18,7 +18,7 @@ const (
 	// MeleeAttackRangeAllowance includes the intentional small gap between colliders,
 	// client click-to-move stopping tolerance, and a small network/physics margin.
 	// Players should not need to physically push into one another to attack.
-	MeleeAttackRangeAllowance = 0.4
+	MeleeAttackRangeAllowance = 1.7
 	MeleeAttackDamage         = 10
 	MeleeSideDamageMultiplier = 1.5
 	MeleeRearDamageMultiplier = 2.0
