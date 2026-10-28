@@ -96,9 +96,18 @@ func TestMonsterDeathDropsOneTenCountSoulshotCapsule(t *testing.T) {
 			if math.Abs(drop.SpawnPosition.Y-wantHeadY) > 1e-9 {
 				t.Fatalf("launch height = %.3f, want monster top at %.3f", drop.SpawnPosition.Y, wantHeadY)
 			}
-			distance := math.Hypot(drop.Position.X-position.X, drop.Position.Z-position.Z)
-			if distance < 0.9 || distance > 2.6 {
-				t.Fatalf("landing point is not scattered around the collider boundary: distance=%.3f", distance)
+			dx := drop.Position.X - position.X
+			dz := drop.Position.Z - position.Z
+			distance := math.Hypot(dx, dz)
+			boundaryDistance := colliderForMonster(monster).Radius
+			if colliderForMonster(monster).Shape == ColliderBox && distance > 1e-9 {
+				boundaryDistance = boxBoundaryDistanceAlongDirection(
+					colliderForMonster(monster).Size, monster.Rotation, dx/distance, dz/distance)
+			}
+			scatterDistance := distance - boundaryDistance
+			if scatterDistance < 0.15-1e-6 || scatterDistance > 1.0+1e-6 {
+				t.Fatalf("landing point is %.3fm beyond collider boundary, want 0.15-1.0m (radial=%.3f boundary=%.3f)",
+					scatterDistance, distance, boundaryDistance)
 			}
 			if math.Abs(drop.Position.Y-position.Y) > 1e-9 {
 				t.Fatalf("landing Y = %.3f, want ground Y %.3f in test world", drop.Position.Y, position.Y)
