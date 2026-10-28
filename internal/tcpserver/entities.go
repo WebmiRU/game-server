@@ -534,6 +534,156 @@ func (s *Server) RemoveGroundItem(id string) bool {
 	return exists
 }
 
+// dropInventoryStack removes the requested quantity from the authoritative inventory and
+// creates one ground item in the same transaction. The landing point follows the supplied
+// horizontal throw direction and is always at most 1.5 m from the player.
+func (s *Server) dropInventoryStack(
+	playerID, itemTemplate string,
+	quantity int,
+	directionX, directionZ float64,
+) (GroundItemState, []InventoryStack, bool, string) {
+	player, exists := s.storedPlayerState(playerID)
+	if !exists || !player.Online {
+		return GroundItemState{}, nil, false, "player_state_unavailable"
+	}
+
+	itemTemplate = strings.TrimSpace(itemTemplate)
+	if itemTemplate == "" {
+		return GroundItemState{}, nil, false, "item_template_required"
+	}
+	if quantity < 1 {
+		return GroundItemState{}, nil, false, "quantity_must_be_positive"
+	}
+	canonicalTemplate := ResolveItemDefinition(itemTemplate, "").TemplateID
+
+	// A valid mouse direction is preferred. Missing/degenerate directions use the
+	// player's last server-accepted facing so the drop is still deterministic.
+	directionLength := math.Hypot(directionX, directionZ)
+	if !finiteNumber(directionX) || !finiteNumber(directionZ) ||
+		!finiteNumber(directionLength) || directionLength < 1e-6 {
+		qx, qy, qz, qw := player.Rotation.X, player.Rotation.Y, player.Rotation.Z, player.Rotation.W
+		rotationLength := math.Sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+		if !finiteNumber(rotationLength) || rotationLength < 1e-9 {
+			qx, qy, qz, qw = 0, 0, 0, 1
+		} else {
+			qx /= rotationLength
+			qy /= rotationLength
+			qz /= rotationLength
+			qw /= rotationLength
+		}
+		directionX = 2 * (qw*qy + qx*qz)
+		directionZ = 1 - 2*(qy*qy+qz*qz)
+		directionLength = math.Hypot(directionX, directionZ)
+	}
+	if !finiteNumber(directionLength) || directionLength < 1e-6 {
+		directionX, directionZ, directionLength = 0, 1, 1
+	}
+	directionX /= directionLength
+	directionZ /= directionLength
+
+	// PlayerState.Position is the character root, approximately 1.05 m above terrain.
+	// Place the take-off at 2 m above ground, then land 1.5 m along the throw direction.
+	groundY := player.Position.Y - 1.05
+	if s.world != nil {
+		var insideWorld bool
+		groundY, insideWorld = s.world.HeightAtWorld(player.Position.X, player.Position.Z)
+		if !insideWorld {
+			return GroundItemState{}, nil, false, "player_position_outside_world"
+		}
+	}
+
+	landing := worldmap.Vec3{}
+	landingFound := false
+	for _, distance := range []float64{1.5, 1.25, 1.0, 0.75, 0.5, 0.25, 0.0} {
+		landing = worldmap.Vec3{
+			X: player.Position.X + directionX*distance,
+			Y: groundY,
+			Z: player.Position.Z + directionZ*distance,
+		}
+		if s.world != nil {
+			height, insideWorld := s.world.HeightAtWorld(landing.X, landing.Z)
+			if !insideWorld {
+				continue
+			}
+			landing.Y = height
+		}
+		if s.validEntityPosition(landing) {
+			landingFound = true
+			break
+		}
+	}
+	if !landingFound {
+		return GroundItemState{}, nil, false, "no_valid_drop_position"
+	}
+
+	s.inventoryMu.Lock()
+	inventory := append([]InventoryStack(nil), s.playerInventories[playerID]...)
+	available := 0
+	itemName := ""
+	for _, stack := range inventory {
+		if strings.EqualFold(strings.TrimSpace(stack.ItemTemplate), canonicalTemplate) && stack.Quantity > 0 {
+			available += stack.Quantity
+			if itemName == "" {
+				itemName = stack.Name
+			}
+		}
+	}
+	if available < quantity {
+		s.inventoryMu.Unlock()
+		return GroundItemState{}, nil, false, "insufficient_inventory_quantity"
+	}
+
+	remainingToDrop := quantity
+	updatedInventory := make([]InventoryStack, 0, len(inventory))
+	for _, stack := range inventory {
+		if remainingToDrop > 0 &&
+			strings.EqualFold(strings.TrimSpace(stack.ItemTemplate), canonicalTemplate) &&
+			stack.Quantity > 0 {
+			removed := stack.Quantity
+			if removed > remainingToDrop {
+				removed = remainingToDrop
+			}
+			stack.Quantity -= removed
+			remainingToDrop -= removed
+		}
+		if stack.Quantity > 0 {
+			updatedInventory = append(updatedInventory, stack)
+		}
+	}
+
+	definition := ResolveItemDefinition(canonicalTemplate, itemName)
+	now := time.Now().UTC()
+	spawnPosition := worldmap.Vec3{
+		X: player.Position.X,
+		Y: groundY + 2.0,
+		Z: player.Position.Z,
+	}
+	item := GroundItemState{
+		ID:            "drop-" + strings.ReplaceAll(playerID, "/", "-") + "-" + strconv.FormatInt(now.UnixNano(), 10),
+		ItemTemplate:  definition.TemplateID,
+		Name:          definition.Name,
+		Position:      landing,
+		Quantity:      quantity,
+		SpawnPosition: &spawnPosition,
+	}
+
+	// Lock order is inventory -> entities. Other item-pickup paths release entitiesMu
+	// before touching inventoryMu, so this keeps the registry and inventory in sync.
+	s.entitiesMu.Lock()
+	if _, collision := s.groundItems[item.ID]; collision {
+		s.entitiesMu.Unlock()
+		s.inventoryMu.Unlock()
+		return GroundItemState{}, nil, false, "drop_id_collision"
+	}
+	s.groundItems[item.ID] = item
+	s.playerInventories[playerID] = updatedInventory
+	s.entitiesMu.Unlock()
+	resultInventory := append([]InventoryStack(nil), updatedInventory...)
+	s.inventoryMu.Unlock()
+
+	return item, resultInventory, true, "item_dropped"
+}
+
 // boxBoundaryDistanceAlongDirection returns the radial distance from a box centre to its
 // edge along a unit horizontal direction. This differs from its support radius at oblique angles.
 func boxBoundaryDistanceAlongDirection(size worldmap.Vec3, rotation PlayerRotation, dirX, dirZ float64) float64 {
