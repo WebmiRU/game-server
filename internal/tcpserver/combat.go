@@ -429,7 +429,7 @@ func (s *Server) attackTargetInfo(target TargetReference, attackerPosition world
 			return worldmap.Vec3{}, 0, false
 		}
 
-		collider := playerCollisionColliderForMonster(monster)
+		collider := colliderForMonster(monster)
 		dx := attackerPosition.X - monster.Position.X
 		dz := attackerPosition.Z - monster.Position.Z
 		distance := math.Hypot(dx, dz)
