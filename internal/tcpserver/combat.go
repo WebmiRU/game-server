@@ -195,7 +195,7 @@ func (s *Server) resolveAttackAtImpact(conn net.Conn, playerID string, req reque
 	maxDistance := PlayerColliderRadius + targetRadius + MeleeAttackRangeAllowance
 	if distance > maxDistance {
 		if err := s.writeAttackResult(conn, playerID, req.RequestID, false,
-			"attack_out_of_range", target, outOfRangeRetryDelay); err != nil {
+			"attack_out_of_range", target, 0); err != nil {
 			s.logger.Printf("WARNING: cannot send completed attack result to %q: %v", playerID, err)
 		}
 		return
@@ -232,7 +232,7 @@ func (s *Server) resolveAttackAtImpact(conn net.Conn, playerID string, req reque
 		Target:            target,
 		Monster:           damagedMonster,
 		RequestID:         req.RequestID,
-		AttackSpeed:       attackSpeed,
+		AttackSpeed:       s.PlayerAttackSpeed(playerID),
 		Damage:            damage,
 		DamageMultiplier:  damageMultiplier,
 		AttackSide:        attackSide,
